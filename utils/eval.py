@@ -17,8 +17,9 @@ def get_eval_metric_results(config_obj, model, data_loader, device):
     with torch.no_grad():
         loss = 0
         for data in data_loader:
-            data = data.to(device)
-
+            for key, val in data.items():
+                if isinstance(val, torch.Tensor):
+                    data[key] = val.to(device)
             out = model(data)
             loss+=traj_point_loss_func(out, data)
         return loss

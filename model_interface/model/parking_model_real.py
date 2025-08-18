@@ -3,8 +3,9 @@ from torch import nn
 
 from model_interface.model.bev_encoder import BevEncoder, BevQuery
 from model_interface.model.gru_trajectory_decoder import GRUTrajectoryDecoder
-from model_interface.model.lss_bev_model import LssBevModel
 from model_interface.model.trajectory_decoder import TrajectoryDecoder
+from model_interface.model.subgraph import SubGraph
+from model_interface.model.selfatten import SelfAttentionLayer
 from utils.config import Configuration
 
 
@@ -14,34 +15,45 @@ class ParkingModelReal(nn.Module):
 
         self.cfg = cfg
 
-        # Camera Encoder
-        self.lss_bev_model = LssBevModel(self.cfg)
-        self.image_res_encoder = BevEncoder(in_channel=self.cfg.bev_encoder_in_channel)
+        # # Camera Encoder
+        # self.lss_bev_model = LssBevModel(self.cfg)
+        # self.image_res_encoder = BevEncoder(in_channel=self.cfg.bev_encoder_in_channel)
 
-        # Target Encoder
-        self.target_res_encoder = BevEncoder(in_channel=1)
+        # # Target Encoder
+        # self.target_res_encoder = BevEncoder(in_channel=1)
 
-        # BEV Query
-        self.bev_query = BevQuery(self.cfg)
+        # # BEV Query
+        # self.bev_query = BevQuery(self.cfg)
+
+        self.polyline_vec_shape = self.cfg.in_channels * (2 ** self.cfg.num_subgraph_layers)
+        self.subgraph = SubGraph(
+            self.cfg.in_channels, self.cfg.num_subgraph_layers, self.cfg.subgraph_width)
+        self.self_atten_layer = SelfAttentionLayer(
+            self.polyline_vec_shape, self.cfg.global_graph_width, need_scale=False)
 
         # Trajectory Decoder
         self.trajectory_decoder = self.get_trajectory_decoder()
 
     def forward(self, data):
         # Encoder
-        bev_feature, pred_depth, bev_target = self.encoder(data, mode="train")
+        # bev_feature, pred_depth, bev_target = self.encoder(data, mode="train")
+        time_step_len = int(data["time_step_len"][0])
+        valid_lens = data["valid_len"]
+        sub_graph_out = self.subgraph(data)
+        x = sub_graph_out.x.view(-1, time_step_len, self.polyline_vec_shape)
+        out = self.self_atten_layer(x, valid_lens)
 
         # Decoder
-        pred_traj_point = self.trajectory_decoder(bev_feature, data['gt_traj_point_token'].cuda())
+        pred_traj_point = self.trajectory_decoder(out, data['gt_traj_point_token'].cpu())
 
-        return pred_traj_point, pred_depth, bev_target
+        return pred_traj_point
 
     def predict_transformer(self, data, predict_token_num):
         # Encoder
         bev_feature, pred_depth, bev_target = self.encoder(data, mode="predict")
 
         # Auto Regressive Decoder
-        autoregressive_point = data['gt_traj_point_token'].cuda() # During inference, we regard BOS as gt_traj_point_token.
+        autoregressive_point = data['gt_traj_point_token'].to(self.cfg.device) # During inference, we regard BOS as gt_traj_point_token.
         for _ in range(predict_token_num):
             pred_traj_point = self.trajectory_decoder.predict(bev_feature, autoregressive_point)
             autoregressive_point = torch.cat([autoregressive_point, pred_traj_point], dim=1)
@@ -110,7 +122,7 @@ class ParkingModelReal(nn.Module):
             bev_feature = bev_target_encoder + bev_camera_encoder
         elif self.cfg.fusion_method == "concat":
             concat_feature = torch.concatenate([bev_target_encoder, bev_camera_encoder], dim=1)
-            conv = nn.Conv2d(512, 256, kernel_size=3, stride=1, padding=1, bias=False).cuda()
+            conv = nn.Conv2d(512, 256, kernel_size=3, stride=1, padding=1, bias=False).to(self.cfg.device)
             bev_feature = conv(concat_feature)
         else:
             raise ValueError(f"Don't support fusion_method '{self.cfg.fusion_method}'!")

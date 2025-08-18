@@ -64,6 +64,11 @@ class Configuration:
     query_en_bev_length: int
     target_range: float
 
+    in_channels: int
+    num_subgraph_layers: int
+    subgraph_width: int
+    global_graph_width: int
+
     device: torch.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     resume_path: str = None
     config_path: str = None
@@ -71,6 +76,7 @@ class Configuration:
     checkpoint_dir: str = None
     use_depth_distribution: bool = False
     tf_en_motion_length: str = None
+
 
 
 @dataclass

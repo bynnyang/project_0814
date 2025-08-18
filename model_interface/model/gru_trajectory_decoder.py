@@ -45,7 +45,7 @@ class GRUTrajectoryDecoder(nn.Module):
         output_wp = list()
 
         # initial input variable to GRU
-        x = torch.zeros(size=(bs, self.predict_item_number), dtype=z.dtype).cuda()
+        x = torch.zeros(size=(bs, self.predict_item_number), dtype=z.dtype).to(self.cfg.device)
         
         # autoregressive generation of output waypoints
         for _ in range(self.predict_num):

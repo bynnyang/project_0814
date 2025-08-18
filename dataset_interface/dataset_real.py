@@ -11,7 +11,6 @@ from utils.trajectory_utils import TrajectoryInfoParser, tokenize_traj_point
 from dataset import GraphData
 from dataset import GraphDataset
 
-
 class ParkingDataModuleReal(torch.utils.data.Dataset):
     def __init__(self, config: Configuration, is_train):
         super(ParkingDataModuleReal, self).__init__()
@@ -46,40 +45,33 @@ class ParkingDataModuleReal(torch.utils.data.Dataset):
     def __len__(self):
         return len(self.traj_point)
 
-    # def __getitem__(self, index):
-    #     data = {}
-    #     keys = ['x', 'y', 'cluster', 'edge_index', 'valid_len', 'time_step_len',
-    #             'target_point', 'gt_traj_point', 'gt_traj_point_token', 'fuzzy_target_point']
-    #     for key in keys: 
-    #         data[key] = []
-    #     data['x'] = self.gcndata['x'][index]
-    #     data['y'] = self.gcndata['y'][index]
-    #     data['cluster'] = self.gcndata['cluster'][index]
-    #     data['edge_index'] = self.gcndata['edge_index'][index]
-    #     data['valid_len'] = self.gcndata['valid_len'][index]
-    #     data['time_step_len'] = self.gcndata['time_step_len'][index]
-    #     data["gt_traj_point"] = torch.from_numpy(np.array(self.traj_point[index]))
-    #     data['gt_traj_point_token'] = torch.from_numpy(np.array(self.traj_point_token[index]))
-    #     data['target_point'] = torch.from_numpy(self.target_point[index])
-    #     data["fuzzy_target_point"] = torch.from_numpy(self.fuzzy_target_point[index])
-
-    #     return data
-
     def __getitem__(self, index):
-        data = self.graph_dataset[index]  # Get the graph data for the given index
-        data_dict = {
-            'x': data.x,
-            'y': data.y,
-            'cluster': data.cluster,
-            'edge_index': data.edge_index,
-            'valid_len': data.valid_len,
-            'time_step_len': data.time_step_len,
-            'gt_traj_point': torch.from_numpy(np.array(self.traj_point[index])),
-            'gt_traj_point_token': torch.from_numpy(np.array(self.traj_point_token[index])),
-            'target_point': torch.from_numpy(self.target_point[index]),
-            'fuzzy_target_point': torch.from_numpy(self.fuzzy_target_point[index])
-        }
-        return data_dict
+        g: GraphData = self.graph_dataset[index]  # 这是 GraphData 实例
+
+        # 把轨迹/目标等张量挂到图上成为额外属性
+        g.gt_traj_point        = torch.from_numpy(np.array(self.traj_point[index]))
+        g.gt_traj_point_token  = torch.from_numpy(np.array(self.traj_point_token[index]))
+        g.target_point         = torch.from_numpy(self.target_point[index])
+        g.fuzzy_target_point   = torch.from_numpy(self.fuzzy_target_point[index])
+
+        return g  
+
+    # def __getitem__(self, index):
+    #     data = self.graph_dataset[index]  # Get the graph data for the given index
+    #     data_dict = {
+    #         'x': data.x,
+    #         'y': data.y,
+    #         'cluster': data.cluster,
+    #         'edge_index': data.edge_index,
+    #         'valid_len': data.valid_len,
+    #         'time_step_len': data.time_step_len,
+    #         'gt_traj_point': torch.from_numpy(np.array(self.traj_point[index])),
+    #         'gt_traj_point_token': torch.from_numpy(np.array(self.traj_point_token[index])),
+    #         'target_point': torch.from_numpy(self.target_point[index]),
+    #         'fuzzy_target_point': torch.from_numpy(self.fuzzy_target_point[index])
+    #     }
+    #     return data_dict
+    
 
     def create_gt_data(self):
         all_tasks = self.get_all_tasks()

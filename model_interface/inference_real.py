@@ -87,7 +87,7 @@ class ParkingInferenceModuleReal:
         data["target_point"] = torch.from_numpy(np.array(target_point).astype(np.float32))
         data["fuzzy_target_point"] = data["target_point"]
         start_token = [self.BOS_token]
-        data["gt_traj_point_token"] = torch.tensor([start_token], dtype=torch.int64).cuda()
+        data["gt_traj_point_token"] = torch.tensor([start_token], dtype=torch.int64).to(self.device)
 
         self.model.eval()
         delta_predicts = self.inference(data)

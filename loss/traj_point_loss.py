@@ -13,7 +13,7 @@ class TokenTrajPointLoss(nn.Module):
     def forward(self, pred, data):
         pred = pred[:, :-1,:]
         pred_traj_point = pred.reshape(-1, pred.shape[-1])
-        gt_traj_point_token = data['gt_traj_point_token'][:, 1:-1].reshape(-1).cuda()
+        gt_traj_point_token = data['gt_traj_point_token'][:, 1:-1].reshape(-1).to(self.cfg.device)
 
         traj_point_loss = self.ce_loss(pred_traj_point, gt_traj_point_token)
         return traj_point_loss

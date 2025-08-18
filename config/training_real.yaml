@@ -14,8 +14,8 @@ check_val_every_n_epoch: 5
 epochs: 40
 learning_rate: 0.0001
 weight_decay: 0.00001
-batch_size: 1
-num_workers: 8
+batch_size: 8
+num_workers: 1
 # resume_path: ""
 
 ##################### Data Process #####################
@@ -57,3 +57,9 @@ tf_de_dim: 256
 tf_de_heads: 4
 tf_de_layers: 4
 tf_de_dropout: 0.05
+
+
+in_channels: 6 
+num_subgraph_layers: 3
+subgraph_width: 64
+global_graph_width: 256
