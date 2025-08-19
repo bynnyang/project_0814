@@ -212,8 +212,8 @@ def assign_val(output_folder_train, output_folder_val):
     
 def main():
     t_start = 0.0
-    t_end = 59.5
-    time_step = 0.5
+    t_end = 59.8
+    time_step = 0.1
     mcap_directory = "./data"
     output_folder_path = "./e2e_dataset"
     output_folder_train = os.path.join(output_folder_path,"train")

@@ -4,3 +4,6 @@ __pycache__
 */__pycache__/
 */*/__pycache__/
 data/
+trained_params/
+e2e_dataset/
+interm_data/

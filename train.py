@@ -82,9 +82,10 @@ def train(config_obj):
     global best_minade
     device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
    
-    dataset = ParkingDataModuleReal(config_obj, is_train=1)
-    train_loader = DataLoader(dataset, batch_size=config_obj.batch_size, shuffle=True, num_workers=config_obj.num_workers, collate_fn=collate_graph)
-    val_loader = DataLoader(dataset, batch_size= config_obj.batch_size, shuffle=False, num_workers=config_obj.num_workers, collate_fn=collate_graph)
+    dataset_train = ParkingDataModuleReal(config_obj, is_train=1)
+    dataset_val = ParkingDataModuleReal(config_obj, is_train=0)
+    train_loader = DataLoader(dataset_train, batch_size=config_obj.batch_size, shuffle=True, num_workers=config_obj.num_workers, collate_fn=collate_graph)
+    val_loader = DataLoader(dataset_val, batch_size= config_obj.batch_size, shuffle=False, num_workers=config_obj.num_workers, collate_fn=collate_graph)
 
     model = ParkingModelReal(config_obj)
     model = model.to(device=device)
