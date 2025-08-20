@@ -27,6 +27,7 @@ class Configuration:
 
     training_dir: str
     validation_dir: str
+    test_dir: str
     autoregressive_points: int
     item_number: int
     token_nums: int

@@ -2,6 +2,7 @@
 data_dir: './e2e_dataset/'
 training_dir: "train"
 validation_dir: "val"
+test_dir: "test"
 
 ##################### Basic Options #####################
 data_mode: "real_scene"

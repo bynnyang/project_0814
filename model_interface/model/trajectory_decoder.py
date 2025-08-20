@@ -66,7 +66,7 @@ class TrajectoryDecoder(nn.Module):
         
         offset = 1
         if padding_num > 0:
-            padding = torch.ones(tgt.size(0), padding_num).fill_(self.PAD_token).long().to('cuda')
+            padding = torch.ones(tgt.size(0), padding_num).fill_(self.PAD_token).long().to(self.cfg.device)
             tgt = torch.cat([tgt, padding], dim=1)
 
         tgt_mask, tgt_padding_mask = self.create_mask(tgt)

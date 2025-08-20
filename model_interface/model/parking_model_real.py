@@ -44,21 +44,25 @@ class ParkingModelReal(nn.Module):
         out = self.self_atten_layer(x, valid_lens)
 
         # Decoder
-        pred_traj_point = self.trajectory_decoder(out, data['gt_traj_point_token'].cpu())
+        pred_traj_point = self.trajectory_decoder(out, data['gt_traj_point_token'].to(self.cfg.device))
 
         return pred_traj_point
 
     def predict_transformer(self, data, predict_token_num):
         # Encoder
-        bev_feature, pred_depth, bev_target = self.encoder(data, mode="predict")
-
+        # bev_feature, pred_depth, bev_target = self.encoder(data, mode="predict")
+        time_step_len = int(data["time_step_len"][0])
+        valid_lens = data["valid_len"]
+        sub_graph_out = self.subgraph(data)
+        x = sub_graph_out.x.view(-1, time_step_len, self.polyline_vec_shape)
+        out = self.self_atten_layer(x, valid_lens)
         # Auto Regressive Decoder
         autoregressive_point = data['gt_traj_point_token'].to(self.cfg.device) # During inference, we regard BOS as gt_traj_point_token.
         for _ in range(predict_token_num):
-            pred_traj_point = self.trajectory_decoder.predict(bev_feature, autoregressive_point)
+            pred_traj_point = self.trajectory_decoder.predict(out, autoregressive_point)
             autoregressive_point = torch.cat([autoregressive_point, pred_traj_point], dim=1)
 
-        return autoregressive_point, pred_depth, bev_target
+        return autoregressive_point
 
     def predict_gru(self, data):
         # Encoder

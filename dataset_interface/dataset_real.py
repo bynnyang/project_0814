@@ -34,8 +34,10 @@ class ParkingDataModuleReal(torch.utils.data.Dataset):
         self.gnndir = "./interm_data"
         if is_train == 1:
             self.folder = "train"
-        else:
+        elif is_train == 0:
             self.folder = "val"
+        else:
+            self.folder = "test"
         self.dataptpath = os.path.join(self.gnndir, f"{self.folder}_intermediate")
 
         # self.graph_dataset = torch.load(self.dataptpath, weights_only=False)
@@ -172,7 +174,13 @@ class ParkingDataModuleReal(torch.utils.data.Dataset):
         all_tasks = []
         train_data_dir = os.path.join(self.root_dir, self.cfg.training_dir)
         val_data_dir = os.path.join(self.root_dir, self.cfg.validation_dir)
-        data_dir = train_data_dir if self.is_train == 1 else val_data_dir
+        test_data_dir = os.path.join(self.root_dir, self.cfg.test_dir)
+        if self.is_train == 1:
+            data_dir = train_data_dir
+        elif self.is_train == 0:
+            data_dir = val_data_dir
+        else:
+            data_dir = test_data_dir
         for scene_item in os.listdir(data_dir):
             scene_path = os.path.join(data_dir, scene_item)
             all_tasks.append(scene_path)
