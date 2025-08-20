@@ -10,6 +10,8 @@ from utils.trajectory_utils import TrajectoryInfoParser
 from utils.cluster_utils import ClusterInfoParser
 from utils.vec2d import Vec2d
 from utils.box2d import Box2d
+import copy
+import json
 # %matplotlib inline
 
 
@@ -21,14 +23,56 @@ def get_safe_yaw(yaw):
     yaw = yaw / 180.0 * 3.14
     return yaw
 
-def create_parking_goal_vcs(traje_info_obj: TrajectoryInfoParser, world2ego_mat: np.array):
+def parser_measurements_target(target_point, switch):
+    pose_ret = {
+        'x':target_point[0],
+        'y':target_point[1],
+        'theta':target_point[2],
+        'dir': switch,
+    }
+
+    return pose_ret
+
+def create_parking_goal_vcs(traje_info_obj: TrajectoryInfoParser, world2ego_mat: np.array, switch_side: float, filename: str, ego_index):
     target_pose_in_world = traje_info_obj.get_precise_target_pose()
     target_pose_in_ego = target_pose_in_world.get_pose_in_ego(world2ego_mat)
-    yaw_refine = get_safe_yaw(target_pose_in_ego.yaw)
+    target_pose_in_ego.y = target_pose_in_ego.y * switch_side
+    yaw_refine = get_safe_yaw(target_pose_in_ego.yaw) * switch_side
     parking_goal = [target_pose_in_ego.x, target_pose_in_ego.y, yaw_refine]
+    target_pose = parser_measurements_target(parking_goal, switch_side)
+    save_measurements(target_pose, ego_index, filename, 0, "pre_target")
     return parking_goal
 
-def create_clusters_info_vcs(cluster_info_obj: ClusterInfoParser, world2ego_mat: np.array, ego_index):
+def save_measurements(measurements, ego_index, filename, cnt, measurement_tag="measurements"):
+    measurements_path = os.path.join(filename, str(ego_index))
+    os.makedirs(measurements_path, exist_ok=True)
+    measurements_path_final = os.path.join(measurements_path, measurement_tag)
+    os.makedirs(measurements_path_final, exist_ok=True)
+    measurements_filename = os.path.join(measurements_path_final, "{:04d}.json".format(cnt))
+    if measurements == None:
+        return
+    with open(measurements_filename, 'w') as json_file:
+        json.dump(measurements, json_file, indent=4)
+
+def parser_clusters_pred(cluster_frame_in_vcs):
+        clusters_list =[]
+        for clusters in cluster_frame_in_vcs:
+            my_dict = {
+                "id": clusters["id"],
+                "p0": {
+                    "x": clusters["p0"].x,
+                    "y": clusters["p0"].y
+                },
+                "p1": {
+                    "x": clusters["p1"].x,
+                    "y": clusters["p1"].y
+                }
+            }
+            clusters_list.append(my_dict)
+        return clusters_list
+
+
+def create_clusters_info_vcs(cluster_info_obj: ClusterInfoParser, world2ego_mat: np.array, ego_index, switch_side: float, filename: str):
     cluster_frame_in_world = cluster_info_obj.get_clusters(ego_index)
     cluster_frame_in_vcs =[]  
     cluster_dict_template = {
@@ -36,12 +80,17 @@ def create_clusters_info_vcs(cluster_info_obj: ClusterInfoParser, world2ego_mat:
             "p0": {},
             "p1": {}
         }
-    for each_cluster in cluster_frame_in_world:
-        each_cluster_vcs = cluster_dict_template.copy()
-        each_cluster_vcs["id"] = each_cluster["id"]
+    for index, each_cluster in enumerate(cluster_frame_in_world):
+        each_cluster_vcs = copy.deepcopy(cluster_dict_template)
+        each_cluster_vcs["id"] = each_cluster["id"] * switch_side
         each_cluster_vcs["p0"] = each_cluster["p0"].get_pose_in_ego(world2ego_mat)
+        each_cluster_vcs["p0"].y = each_cluster_vcs["p0"].y * switch_side
         each_cluster_vcs["p1"] = each_cluster["p1"].get_pose_in_ego(world2ego_mat)
+        each_cluster_vcs["p1"].y = each_cluster_vcs["p1"].y * switch_side
         cluster_frame_in_vcs.append(each_cluster_vcs)
+    cluster_frame_in_switch = parser_clusters_pred(cluster_frame_in_vcs)
+    save_measurements(cluster_frame_in_switch, ego_index, filename, 0, "pre_cluster")
+
     return cluster_frame_in_vcs
 
 def get_agent_feature_ls(total_frames):
@@ -190,13 +239,18 @@ def compute_feature_for_one_seq(filename) -> List[List]:
 
     target_point_vcs = []
     clusters_info_vcs = []
+    judge_ego_pose = traje_info_obj.get_trajectory_point(0)
+    judge_world2ego_mat = judge_ego_pose.get_homogeneous_transformation().get_inverse_matrix()
+    finally_pose_in_ego = traje_info_obj.trajectory_list[-1].get_pose_in_ego(judge_world2ego_mat)
+    judge_pose_in_ego = traje_info_obj.trajectory_list[-5].get_pose_in_ego(judge_world2ego_mat)
+    switch_side = -1.0 if finally_pose_in_ego.y > judge_pose_in_ego.y else 1.0
 
     for ego_index in range(0, traje_info_obj.total_frames): # ego iteration
         ego_pose = traje_info_obj.get_trajectory_point(ego_index)
         world2ego_mat = ego_pose.get_homogeneous_transformation().get_inverse_matrix()
-        parking_goal = create_parking_goal_vcs(traje_info_obj, world2ego_mat)
+        parking_goal = create_parking_goal_vcs(traje_info_obj, world2ego_mat, switch_side, filename, ego_index)
         target_point_vcs.append(parking_goal)
-        cluster_frame_info_vcs = create_clusters_info_vcs(cluster_info_obj, world2ego_mat, ego_index)
+        cluster_frame_info_vcs = create_clusters_info_vcs(cluster_info_obj, world2ego_mat, ego_index, switch_side, filename)
         clusters_info_vcs.append(cluster_frame_info_vcs)
 
     assert (len(target_point_vcs) == len(clusters_info_vcs))

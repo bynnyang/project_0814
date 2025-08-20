@@ -10,6 +10,7 @@ from utils.config import Configuration
 from utils.trajectory_utils import TrajectoryInfoParser, tokenize_traj_point
 from dataset import GraphData
 from dataset import GraphDataset
+import json
 
 class ParkingDataModuleReal(torch.utils.data.Dataset):
     def __init__(self, config: Configuration, is_train):
@@ -71,21 +72,43 @@ class ParkingDataModuleReal(torch.utils.data.Dataset):
     #         'fuzzy_target_point': torch.from_numpy(self.fuzzy_target_point[index])
     #     }
     #     return data_dict
-    
+    def save_measurements(self, measurements, ego_index, filename, cnt, measurement_tag="measurements"):
+        measurements_path = os.path.join(filename, str(ego_index))
+        os.makedirs(measurements_path, exist_ok=True)
+        measurements_path_final = os.path.join(measurements_path, measurement_tag)
+        os.makedirs(measurements_path_final, exist_ok=True)
+        measurements_filename = os.path.join(measurements_path_final, "{:04d}.json".format(cnt))
+        if measurements == None:
+            return
+        with open(measurements_filename, 'w') as json_file:
+            json.dump(measurements, json_file, indent=4)
+
+    def parser_measurements_pred(self, pred_point,switch):
+        pose_ret = {
+            'x':pred_point[0],
+            'y':pred_point[1],
+            'dir': switch,
+        }
+
+        return pose_ret
 
     def create_gt_data(self):
         all_tasks = self.get_all_tasks()
 
         for task_index, task_path in tqdm.tqdm(enumerate(all_tasks)):  # task iteration
             traje_info_obj = TrajectoryInfoParser(task_index, task_path)
-
+            judge_ego_pose = traje_info_obj.get_trajectory_point(0)
+            judge_world2ego_mat = judge_ego_pose.get_homogeneous_transformation().get_inverse_matrix()
+            finally_pose_in_ego = traje_info_obj.trajectory_list[-1].get_pose_in_ego(judge_world2ego_mat)
+            judge_pose_in_ego = traje_info_obj.trajectory_list[-50].get_pose_in_ego(judge_world2ego_mat)
+            switch_side = -1.0 if finally_pose_in_ego.y > judge_pose_in_ego.y else 1.0
             for ego_index in range(0, traje_info_obj.total_frames):  # ego iteration
                 ego_pose = traje_info_obj.get_trajectory_point(ego_index)
                 world2ego_mat = ego_pose.get_homogeneous_transformation().get_inverse_matrix()
                 # create predict point
-                predict_point_token_gt, predict_point_gt = self.create_predict_point_gt(traje_info_obj, ego_index, world2ego_mat)
+                predict_point_token_gt, predict_point_gt = self.create_predict_point_gt(traje_info_obj, ego_index, world2ego_mat, switch_side, task_path)
                 # create parking goal
-                fuzzy_parking_goal, parking_goal = self.create_parking_goal_gt(traje_info_obj, world2ego_mat)
+                fuzzy_parking_goal, parking_goal = self.create_parking_goal_gt(traje_info_obj, world2ego_mat, switch_side)
 
                 self.traj_point.append(predict_point_gt)
 
@@ -96,7 +119,7 @@ class ParkingDataModuleReal(torch.utils.data.Dataset):
 
         self.format_transform()
 
-    def create_predict_point_gt(self, traje_info_obj: TrajectoryInfoParser, ego_index: int, world2ego_mat: np.array) -> List[int]:
+    def create_predict_point_gt(self, traje_info_obj: TrajectoryInfoParser, ego_index: int, world2ego_mat: np.array, switch_side: float, filename: str) -> List[int]:
         predict_point, predict_point_token = [], []
         for predict_index in range(self.cfg.autoregressive_points):  # predict iteration
             predict_stride_index = self.get_clip_stride_index(predict_index = predict_index, 
@@ -105,6 +128,7 @@ class ParkingDataModuleReal(torch.utils.data.Dataset):
                                                                 stride=self.cfg.traj_downsample_stride)
             predict_pose_in_world = traje_info_obj.get_trajectory_point(predict_stride_index)
             predict_pose_in_ego = predict_pose_in_world.get_pose_in_ego(world2ego_mat)
+            predict_pose_in_ego.y = predict_pose_in_ego.y * switch_side
             progress = traje_info_obj.get_progress(predict_stride_index)
             predict_point.append([predict_pose_in_ego.x, predict_pose_in_ego.y])
             tokenize_ret = tokenize_traj_point(predict_pose_in_ego.x, predict_pose_in_ego.y, 
@@ -116,6 +140,9 @@ class ParkingDataModuleReal(torch.utils.data.Dataset):
                 break
 
         predict_point_gt = [item for sublist in predict_point for item in sublist]
+        # for index, point in enumerate(predict_point):
+        #     point_record = self.parser_measurements_pred(point, switch_side)
+        #     self.save_measurements(point_record, ego_index, filename,index,"pred")
         append_pad_num = self.cfg.autoregressive_points * self.cfg.item_number - len(predict_point_gt)
         assert append_pad_num >= 0
         predict_point_gt = predict_point_gt + (append_pad_num // 2) * [predict_point_gt[-2], predict_point_gt[-1]]
@@ -129,13 +156,15 @@ class ParkingDataModuleReal(torch.utils.data.Dataset):
         predict_point_token_gt = predict_point_token_gt + append_pad_num * [self.PAD_token]
         return predict_point_token_gt, predict_point_gt
 
-    def create_parking_goal_gt(self, traje_info_obj: TrajectoryInfoParser, world2ego_mat: np.array):
+    def create_parking_goal_gt(self, traje_info_obj: TrajectoryInfoParser, world2ego_mat: np.array, switch_side: float):
         candidate_target_pose_in_world = traje_info_obj.get_random_candidate_target_pose()
         candidate_target_pose_in_ego = candidate_target_pose_in_world.get_pose_in_ego(world2ego_mat)
+        candidate_target_pose_in_ego.y = candidate_target_pose_in_ego.y * switch_side
         fuzzy_parking_goal = [candidate_target_pose_in_ego.x, candidate_target_pose_in_ego.y]
 
         target_pose_in_world = traje_info_obj.get_precise_target_pose()
         target_pose_in_ego = target_pose_in_world.get_pose_in_ego(world2ego_mat)
+        target_pose_in_ego.y = target_pose_in_ego.y * switch_side
         parking_goal = [target_pose_in_ego.x, target_pose_in_ego.y]
 
         return fuzzy_parking_goal, parking_goal

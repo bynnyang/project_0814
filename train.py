@@ -23,7 +23,7 @@ from torch.utils.data._utils.collate import default_collate
 decay_lr_factor = 0.3
 decay_lr_every = 5
 lr = 0.001
-epochs = 25
+epochs = 50
 end_epoch = 0
 lr = 0.001
 in_channels, out_channels = 8, 60
@@ -31,7 +31,7 @@ show_every = 20
 val_every = 5
 best_minade = float('inf')
 save_dir = './trained_params'
-date_record = "250815"
+date_record = "250820"
 global_step = 0
 
 
@@ -46,7 +46,7 @@ def save_checkpoint(checkpoint_dir, model, optimizer, end_epoch, val_minade, dat
         'end_epoch' : end_epoch,
         'val_minade': val_minade
         }
-    checkpoint_path = os.path.join(checkpoint_dir, f'epoch_{end_epoch}.valminade_{val_minade:.3f}.{date}.{"xkhuang"}.pth')
+    checkpoint_path = os.path.join(checkpoint_dir, f'epoch_{end_epoch}.valminade_{val_minade:.3f}.{date}.{"ParkE2E"}.pth')
     torch.save(state, checkpoint_path)
     print('model saved to %s' % checkpoint_path)
     

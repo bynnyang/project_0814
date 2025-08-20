@@ -4,7 +4,6 @@ import json
 import random
 import shutil
 import tqdm
-import copy
 
 
 class Car_info:
@@ -151,28 +150,23 @@ class ProcessMcapData:
         return pose_ret
     
     def parser_clusters_msg(self, time):
-        my_dict_template = {
-            "id": None,
-            "p0": {
-                "x": None,
-                "y": None
-            },
-            "p1": {
-                "x": None,
-                "y": None
-            }
-        }
         clusters_list =[]
-        clusters_msg = self.reader.get_cluster_info_by_time(time)
+        key_time = time / 1000
+        clusters_msg = self.reader.get_cluster_info_by_time(key_time)
         for clusters in clusters_msg.ups_cluster_info.clusters:
             for index, line in enumerate(clusters.lines):
                 if(line.height != 2):
-                    my_dict = copy.deepcopy(my_dict_template)
-                    my_dict["id"] = clusters.id
-                    my_dict["p0"]["x"] = line.p0.x
-                    my_dict["p0"]["y"] = line.p0.y
-                    my_dict["p1"]["x"] = line.p1.x
-                    my_dict["p1"]["y"] = line.p1.y
+                    my_dict = {
+                        "id": clusters.id,
+                        "p0": {
+                            "x": line.p0.x,
+                            "y": line.p0.y
+                        },
+                        "p1": {
+                            "x": line.p1.x,
+                            "y": line.p1.y
+                        }
+                    }
                     clusters_list.append(my_dict)
         return clusters_list
 
@@ -190,9 +184,11 @@ class ProcessMcapData:
         pbar.close()
         seen_values = set()  # 用于记录已经出现过的值
         for key, value in self.car_info_data.items():
-            if value not in seen_values:
-                seen_values.add(value)
-                self.car_info_data_unique[key] = value
+            signature = (round(value.pose_x, 2), round(value.pose_y, 2), value.car_gear)
+            if signature in seen_values:
+                continue
+            seen_values.add(signature)
+            self.car_info_data_unique[key] = value
         num_cnt = 0
         for key, value in self.car_info_data_unique.items():
             self.measurements = self.parser_measurements_msg(value)

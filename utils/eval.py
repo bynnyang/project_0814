@@ -22,6 +22,7 @@ def get_eval_metric_results(config_obj, model, data_loader, device):
                     data[key] = val.to(device)
             out = model(data)
             loss+=traj_point_loss_func(out, data)
+        loss = loss / len(data_loader)
         return loss
 
 def eval_loss():
