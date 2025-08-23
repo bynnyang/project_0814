@@ -57,7 +57,12 @@ def get_cluster_edge_index(num_nodes, start=0):
     edge_index = np.empty((2, 0))
     for i in range(num_nodes):
         # FIX BUG: no self loop in ful connected nodes graphs
-        edge_index = np.hstack((edge_index, np.vstack((i, i))))
+        from_ = np.ones(1, dtype=np.int64) * i
+        to_ = from_ + 1
+        if to_ == num_nodes:
+            to_ = 0
+        # FIX BUG: no self loop in ful connected nodes graphs
+        edge_index = np.hstack((edge_index, np.vstack((from_, to_))))
     edge_index = edge_index + start
 
     return edge_index.astype(np.int64), num_nodes + start
@@ -169,7 +174,7 @@ class GraphDataset(InMemoryDataset):
                 
                 for id_, mask_ in clusert_mask.items():
                     data_ = all_in_features[mask_[0] + agen_len + park_slot_len: mask_[1] + agen_len + park_slot_len]
-                    edge_index_, edge_index_start = get_park_slot_edge_index(
+                    edge_index_, edge_index_start = get_cluster_edge_index(
                         data_.shape[0], edge_index_start)
                     x_ls.append(data_)
                     edge_index_ls.append(edge_index_)
@@ -193,6 +198,7 @@ class GraphDataset(InMemoryDataset):
                 edge_index=torch.from_numpy(tup[3]),
                 valid_len=torch.tensor([valid_len_ls[ind]]),
                 time_step_len=torch.tensor([padd_to_index + 1])
+                # time_step_len=torch.tensor([valid_len_ls[ind] + 1])
             )
             g_ls.append(g_data)
         data, slices = self.collate(g_ls)

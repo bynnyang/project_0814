@@ -17,6 +17,7 @@ from torch_geometric.data import Batch
 from torch.utils.data._utils.collate import default_collate
 from utils.config import InferenceConfiguration
 from model_interface.model_interface import get_parking_model
+from tqdm import tqdm
 
     
 def load_checkpoint(checkpoint_path, model, optimizer):
@@ -54,10 +55,10 @@ def inference(inference_cfg: InferenceConfiguration):
     dataset_test = ParkingDataModuleReal(inference_cfg.train_meta_config, is_train=2)
     test_loader = DataLoader(dataset_test, batch_size= 1, shuffle=False, num_workers=0, collate_fn=collate_graph)
     count = 0
-    for data in test_loader:
+    for data in tqdm(test_loader):
         data.to(device)
         parking_inference_obj.predict(data, count, mode=inference_cfg.predict_mode)
-        count=+1
+        count+=1
     
 
 

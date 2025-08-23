@@ -53,14 +53,14 @@ query_en_dropout: 0.05
 query_en_bev_length: 256
 
 ##################### Decoder #####################
-decoder_method: "transformer"
+decoder_method: "gru"
 tf_de_dim: 256
 tf_de_heads: 4
 tf_de_layers: 4
 tf_de_dropout: 0.05
 
 
-in_channels: 6 
-num_subgraph_layers: 3
-subgraph_width: 64
+in_channels: 4 
+num_subgraph_layers: 9
+subgraph_width: 256
 global_graph_width: 256

@@ -14,7 +14,8 @@ class GRUTrajectoryDecoder(nn.Module):
 
         # waypoints prediction
         self.join = nn.Sequential(
-            nn.Linear(int(self.cfg.final_dim[0] * self.cfg.final_dim[1]), 512),
+            # nn.Linear(int(self.cfg.final_dim[0] * self.cfg.final_dim[1]), 512),
+            nn.Linear(int(self.cfg.final_dim[0]), 512),
             nn.ReLU(inplace=True),
             nn.Linear(512, 256),
             nn.ReLU(inplace=True),

@@ -25,11 +25,11 @@ class ParkingModelReal(nn.Module):
         # # BEV Query
         # self.bev_query = BevQuery(self.cfg)
 
-        self.polyline_vec_shape = self.cfg.in_channels * (2 ** self.cfg.num_subgraph_layers)
+        # self.polyline_vec_shape = self.cfg.in_channels * (2 ** self.cfg.num_subgraph_layers)
         self.subgraph = SubGraph(
             self.cfg.in_channels, self.cfg.num_subgraph_layers, self.cfg.subgraph_width)
         self.self_atten_layer = SelfAttentionLayer(
-            self.polyline_vec_shape, self.cfg.global_graph_width, need_scale=False)
+            self.cfg.subgraph_width, self.cfg.global_graph_width, need_scale=False)
 
         # Trajectory Decoder
         self.trajectory_decoder = self.get_trajectory_decoder()
@@ -40,11 +40,11 @@ class ParkingModelReal(nn.Module):
         time_step_len = int(data["time_step_len"][0])
         valid_lens = data["valid_len"]
         sub_graph_out = self.subgraph(data)
-        x = sub_graph_out.x.view(-1, time_step_len, self.polyline_vec_shape)
+        x = sub_graph_out.view(-1, time_step_len, self.cfg.subgraph_width)
         out = self.self_atten_layer(x, valid_lens)
 
         # Decoder
-        pred_traj_point = self.trajectory_decoder(out, data['gt_traj_point_token'].to(self.cfg.device))
+        pred_traj_point = self.trajectory_decoder(out[:, [0]].squeeze(1), data['gt_traj_point_token'].to(self.cfg.device))
 
         return pred_traj_point
 
@@ -54,7 +54,7 @@ class ParkingModelReal(nn.Module):
         time_step_len = int(data["time_step_len"][0])
         valid_lens = data["valid_len"]
         sub_graph_out = self.subgraph(data)
-        x = sub_graph_out.x.view(-1, time_step_len, self.polyline_vec_shape)
+        x = sub_graph_out.view(-1, time_step_len, self.cfg.subgraph_width)
         out = self.self_atten_layer(x, valid_lens)
         # Auto Regressive Decoder
         autoregressive_point = data['gt_traj_point_token'].to(self.cfg.device) # During inference, we regard BOS as gt_traj_point_token.
@@ -66,10 +66,15 @@ class ParkingModelReal(nn.Module):
 
     def predict_gru(self, data):
         # Encoder
-        bev_feature, _, _ = self.encoder(data, mode="predict")
+        # bev_feature, _, _ = self.encoder(data, mode="predict")
+        time_step_len = int(data["time_step_len"][0])
+        valid_lens = data["valid_len"]
+        sub_graph_out = self.subgraph(data)
+        x = sub_graph_out.view(-1, time_step_len, self.cfg.subgraph_width)
+        out = self.self_atten_layer(x, valid_lens)
 
         # Decoder
-        autoregressive_point = self.trajectory_decoder(bev_feature).squeeze()
+        autoregressive_point = self.trajectory_decoder(out[:, [0]].squeeze(1)).squeeze()
         return autoregressive_point
 
     def encoder(self, data, mode):

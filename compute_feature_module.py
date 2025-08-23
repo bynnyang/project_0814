@@ -150,9 +150,20 @@ def encoding_features(agent_feature, clusters_feature, park_slot_feature):
 
 
     """
+
+    """
+    20250821重构特征
+
+    polyline_features: vstack[
+                (x, y, theta, polyline_id), 车身轮廓的每个顶点一共四个节点构成一个polyline
+                (x, y, theta,  polyline_id), cluster的每个顶点,一共两个节点构成一个polyline
+                (x, y, theta,  polyline_id), 目标位置一个点,等同于一个节点,自连接构成一个polyline
+                ]
+    
+    """
     polyline_id = 0
     agent_id2mask, cluster_id2mask, park_slot_id2mask= {}, {},{}
-    agent_nd, cluster_nd, park_slot_nd = np.empty((0, 6)), np.empty((0, 6)), np.empty((0, 6))
+    agent_nd, cluster_nd, park_slot_nd = np.empty((0, 4)), np.empty((0, 4)), np.empty((0, 4))
     agent_feature_points_list = []
     pre_agent_len = agent_nd.shape[0]
     for index in range(0,len(agent_feature[0])):
@@ -160,14 +171,14 @@ def encoding_features(agent_feature, clusters_feature, park_slot_feature):
         y_array = agent_feature[0][index].y_
         agent_feature_points_list.append([x_array,y_array])
     agent_feature_points_array = np.array(agent_feature_points_list)
-    first_row = agent_feature_points_array[0,:]
-    rest_of_rows = agent_feature_points_array[1:,:]
-    new_array = np.vstack((rest_of_rows, first_row))
-    agent_feature_points_array = np.hstack((agent_feature_points_array, new_array))
+    # first_row = agent_feature_points_array[0,:]
+    # rest_of_rows = agent_feature_points_array[1:,:]
+    # new_array = np.vstack((rest_of_rows, first_row))
+    # agent_feature_points_array = np.hstack((agent_feature_points_array, new_array))
     agent_len = agent_feature_points_array.shape[0]
     agent_nd = np.hstack((agent_feature_points_array, np.ones((agent_len, 1)) * 0.0, np.ones((agent_len, 1)) * polyline_id))
 
-    assert agent_nd.shape[1] == 6
+    assert agent_nd.shape[1] == 4
 
     agent_id2mask[polyline_id] = (pre_agent_len, agent_nd.shape[0])
     pre_agent_len = agent_nd.shape[0]
@@ -176,11 +187,11 @@ def encoding_features(agent_feature, clusters_feature, park_slot_feature):
 
     pre_park_slot_len = park_slot_nd.shape[0]
     park_slot_feature_2d = np.array([park_slot_feature[0][0],park_slot_feature[0][1]]).reshape(1, -1)
-    park_slot_points_array = np.hstack((park_slot_feature_2d, park_slot_feature_2d))
+    park_slot_points_array = park_slot_feature_2d
     park_len = park_slot_points_array.shape[0]
     park_slot_nd = np.hstack((park_slot_points_array, np.ones((park_len, 1)) * park_slot_feature[0][2], np.ones((park_len, 1)) * polyline_id))
 
-    assert park_slot_nd.shape[1] == 6
+    assert park_slot_nd.shape[1] == 4
 
     park_slot_id2mask[polyline_id] = (pre_park_slot_len, park_slot_nd.shape[0])
     pre_park_slot_len = park_slot_nd.shape[0]
@@ -199,11 +210,17 @@ def encoding_features(agent_feature, clusters_feature, park_slot_feature):
         delta_y = p1_y - p0_y
         angle_rad = np.arctan2(delta_y, delta_x)
         angle_rad = get_safe_yaw(np.degrees(angle_rad))
-        line_points_array = np.hstack((p0_feature_2d, p1_feature_2d))
-        line_len = line_points_array.shape[0]
-        one_cluster_nd = np.hstack((line_points_array, np.ones((line_len, 1)) * angle_rad, np.ones((line_len, 1)) * polyline_id))
-        cluster_nd = np.vstack((cluster_nd, one_cluster_nd))
-        cluster_id2mask[polyline_id]=(pre_cluster_len,cluster_nd.shape[0])
+        # line_points_array = np.hstack((p0_feature_2d, p1_feature_2d))
+        # line_len = line_points_array.shape[0]
+        # one_cluster_nd = np.hstack((line_points_array, np.ones((line_len, 1)) * angle_rad, np.ones((line_len, 1)) * polyline_id))
+        p0_points_array = p0_feature_2d
+        p0_len = p0_points_array.shape[0]
+        p0_cluster_nd = np.hstack((p0_points_array, np.ones((p0_len, 1)) * angle_rad, np.ones((p0_len, 1)) * polyline_id))
+        p1_points_array = p1_feature_2d
+        p1_len = p1_points_array.shape[0]
+        p1_cluster_nd = np.hstack((p1_points_array, np.ones((p1_len, 1)) * angle_rad, np.ones((p1_len, 1)) * polyline_id))
+        cluster_nd = np.vstack((cluster_nd, p0_cluster_nd, p1_cluster_nd))
+        cluster_id2mask[polyline_id] = (pre_cluster_len, cluster_nd.shape[0])
         pre_cluster_len = cluster_nd.shape[0]
         polyline_id += 1
 

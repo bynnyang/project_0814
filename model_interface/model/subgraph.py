@@ -5,6 +5,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 from torch_geometric.nn import MessagePassing, max_pool
+from torch_geometric.nn import avg_pool_x
+from torch_geometric.nn import GCNConv
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -18,14 +20,36 @@ class SubGraph(nn.Module):
     Subgraph that computes all vectors in a polyline, and get a polyline-level feature
     """
 
-    def __init__(self, in_channels, num_subgraph_layres=3, hidden_unit=64):
+    def __init__(self, in_channels, num_subgraph_layres=9, hidden_unit=256, dropout=0.1, use_residual=True, use_norm=True):
         super(SubGraph, self).__init__()
-        self.num_subgraph_layres = num_subgraph_layres
-        self.layer_seq = nn.Sequential()
-        for i in range(num_subgraph_layres):
-            self.layer_seq.add_module(
-                f'glp_{i}', GraphLayerProp(in_channels, hidden_unit))
-            in_channels *= 2
+        self.convs = nn.ModuleList()
+        self.norms = nn.ModuleList() if use_norm else None
+        self.dropout = dropout
+        self.use_residual = use_residual
+
+        self.feature_encoder = nn.Sequential(
+            nn.Linear(in_channels, hidden_unit),
+            nn.ReLU(),
+            nn.Linear(hidden_unit, hidden_unit),
+            nn.ReLU()
+        )
+        
+        # 输入层
+        self.convs.append(GCNConv(hidden_unit, hidden_unit))
+        if use_norm:
+            self.norms.append(nn.LayerNorm(hidden_unit))
+        
+        # 隐藏层
+        for _ in range(num_subgraph_layres - 2):
+            self.convs.append(GCNConv(hidden_unit, hidden_unit))
+            if use_norm:
+                self.norms.append(nn.LayerNorm(hidden_unit))
+        
+        # 输出层
+        if num_subgraph_layres > 1:
+            self.convs.append(GCNConv(hidden_unit, hidden_unit))
+            if use_norm:
+                self.norms.append(nn.LayerNorm(hidden_unit))
 
     def forward(self, sub_data):
         """
@@ -33,21 +57,39 @@ class SubGraph(nn.Module):
         args:
             sub_data (Data): [x, y, cluster, edge_index, valid_len]
         """
+        encoder_x = self.feature_encoder(sub_data.x)
 
         data = sub_data
-        x, edge_index = data.x, data.edge_index
-        for name, layer in self.layer_seq.named_modules():
-            if isinstance(layer, GraphLayerProp):
-                x = layer(x, edge_index)
+        x, edge_index = encoder_x, data.edge_index
+
+        if self.use_residual:
+            original_x = x
+
+        for i, conv in enumerate(self.convs):
+            x = conv(x, edge_index)
+            
+            # 应用归一化
+            if self.norms is not None:
+                x = self.norms[i](x)
+            
+            # 应用激活函数
+            x = F.relu(x)
+            
+            # 应用dropout
+            x = F.dropout(x, p=self.dropout, training=self.training)
+            
+            # 应用残差连接（如果维度匹配）
+            if self.use_residual and i == 0 and x.shape[1] == original_x.shape[1]:
+                x = x + original_x
+
         data.x = x
-        out_data = max_pool(data.cluster, data)
+        out_data = avg_pool_x(data.cluster, data.x, data.batch)
         # try:
-        assert out_data.x.shape[0] % int(sub_data["time_step_len"][0]) == 0
+        # assert out_data[0].shape[0] % int(data["time_step_len"][0]) == 0
         # except:
             # from pdb import set_trace; set_trace()
-        out_data.x = out_data.x / out_data.x.norm(dim=0)
-        return out_data
-
+        norm_x = F.normalize(out_data[0], p=2, dim=0, eps=1e-6)
+        return norm_x
         # node_feature, _ = torch.max(x, dim=0)
         # # l2 noramlize node_feature before feed it to global graph
         # node_feature = node_feature / node_feature.norm(dim=0)

@@ -14,16 +14,17 @@ import torch.optim as optim
 import os
 import time
 from loss.traj_point_loss import TokenTrajPointLoss
+from loss.traj_point_loss import TrajPointLoss
 from utils.eval import get_eval_metric_results
 from model_interface.model.parking_model_real import ParkingModelReal
 from torch_geometric.data import Batch
 from torch.utils.data._utils.collate import default_collate
 
 
-decay_lr_factor = 0.3
+decay_lr_factor = 0.5
 decay_lr_every = 5
 lr = 0.001
-epochs = 50
+epochs = 100
 end_epoch = 0
 lr = 0.001
 in_channels, out_channels = 8, 60
@@ -31,10 +32,18 @@ show_every = 20
 val_every = 5
 best_minade = float('inf')
 save_dir = './trained_params'
-date_record = "250820"
+date_record = "250822"
 global_step = 0
 
-
+class MinStepLR(optim.lr_scheduler.StepLR):
+    def __init__(self, optimizer, step_size, gamma=0.1, min_lr=1e-6, last_epoch=-1):
+        self.min_lr = min_lr
+        super(MinStepLR, self).__init__(optimizer, step_size, gamma, last_epoch)
+    
+    def get_lr(self):
+        lrs = super(MinStepLR, self).get_lr()
+        # 确保学习率不低于最小值
+        return [max(lr, self.min_lr) for lr in lrs]
 def save_checkpoint(checkpoint_dir, model, optimizer, end_epoch, val_minade, date):
     # state_dict: a Python dictionary object that:
     # - for a model, maps each layer to its parameter tensor;
@@ -56,6 +65,7 @@ def load_checkpoint(checkpoint_path, model, optimizer):
     optimizer.load_state_dict(state['optimizer'])
     print('model loaded from %s' % checkpoint_path)
     return checkpoint_path['end_epoch']
+
 
 
 def collate_graph(batch_list):
@@ -84,15 +94,21 @@ def train(config_obj):
    
     dataset_train = ParkingDataModuleReal(config_obj, is_train=1)
     dataset_val = ParkingDataModuleReal(config_obj, is_train=0)
-    train_loader = DataLoader(dataset_train, batch_size=config_obj.batch_size, shuffle=True, num_workers=config_obj.num_workers, collate_fn=collate_graph)
+    train_loader = DataLoader(dataset_train, batch_size=config_obj.batch_size, shuffle=False, num_workers=config_obj.num_workers, collate_fn=collate_graph)
     val_loader = DataLoader(dataset_val, batch_size= config_obj.batch_size, shuffle=False, num_workers=config_obj.num_workers, collate_fn=collate_graph)
 
     model = ParkingModelReal(config_obj)
     model = model.to(device=device)
-    traj_point_loss_func = TokenTrajPointLoss(config_obj)
+    traj_point_loss_func = None
+    if config_obj.decoder_method == "transformer":
+        traj_point_loss_func = TokenTrajPointLoss(config_obj)
+    elif config_obj.decoder_method == "gru":
+         traj_point_loss_func = TrajPointLoss(config_obj)
     optimizer = optim.Adam(model.parameters(), lr=lr)
-    scheduler = optim.lr_scheduler.StepLR(
-        optimizer, step_size=decay_lr_every, gamma=decay_lr_factor)
+    # scheduler = optim.lr_scheduler.StepLR(
+    #     optimizer, step_size=decay_lr_every, gamma=decay_lr_factor)
+    # scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=50, eta_min=1e-6)
+    scheduler = MinStepLR(optimizer, step_size=decay_lr_every, gamma=decay_lr_factor,min_lr=2e-6)
     
 
 
@@ -108,7 +124,6 @@ def train(config_obj):
             #     if isinstance(val, torch.Tensor):
             #         data[key] = val.to(device)
             data.to(device)
-            if epoch < end_epoch: break
             optimizer.zero_grad()
             out = model(data)
             loss = traj_point_loss_func(out, data)
@@ -134,11 +149,11 @@ def train(config_obj):
                 save_checkpoint(save_dir, model, optimizer, epoch, best_minade, date_record)
                 
     # eval result on the identity dataset
-    metrics = get_eval_metric_results(config_obj, model, val_loader, device)
-    curr_minade = metrics
-    if curr_minade < best_minade:
-        best_minade = curr_minade
-        save_checkpoint(save_dir, model, optimizer, -1, best_minade, date_record)
+    # metrics = get_eval_metric_results(config_obj, model, val_loader, device)
+    # curr_minade = metrics
+    # if curr_minade < best_minade:
+    #     best_minade = curr_minade
+    save_checkpoint(save_dir, model, optimizer, -1, best_minade, date_record)
 
 
 def main():

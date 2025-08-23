@@ -8,12 +8,17 @@ from utils.metrics import CustomizedMetric
 from pprint import pprint
 from typing import List
 from loss.traj_point_loss import TokenTrajPointLoss
+from loss.traj_point_loss import TrajPointLoss
 
 
 def get_eval_metric_results(config_obj, model, data_loader, device):
  
     model.eval()
-    traj_point_loss_func = TokenTrajPointLoss(config_obj)
+    traj_point_loss_func = None
+    if config_obj.decoder_method == "transformer":
+        traj_point_loss_func = TokenTrajPointLoss(config_obj)
+    elif config_obj.decoder_method == "gru":
+         traj_point_loss_func = TrajPointLoss(config_obj)
     with torch.no_grad():
         loss = 0
         for data in data_loader:
