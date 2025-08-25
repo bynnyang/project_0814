@@ -102,7 +102,7 @@ class ParkingDataModuleReal(torch.utils.data.Dataset):
         return len(self.traj_point)
 
     def __getitem__(self, index):
-        g: GraphData = self.graph_dataset[index]  # 这是 GraphData 实例
+        g: GraphData = self.graph_dataset[index].clone()  # 这是 GraphData 实例
 
         x = g.x.clone()
 
@@ -117,8 +117,8 @@ class ParkingDataModuleReal(torch.utils.data.Dataset):
         # g.gt_traj_point        = torch.from_numpy(np.array(self.traj_point[index]))
         g.gt_traj_point        = torch.from_numpy(traj.astype(np.float32))
         g.gt_traj_point_token  = torch.from_numpy(np.array(self.traj_point_token[index]))
-        g.target_point         = torch.from_numpy(self.target_point[index])
-        g.fuzzy_target_point   = torch.from_numpy(self.fuzzy_target_point[index])
+        # g.target_point         = torch.from_numpy(self.target_point[index])
+        # g.fuzzy_target_point   = torch.from_numpy(self.fuzzy_target_point[index])
 
         return g  
 

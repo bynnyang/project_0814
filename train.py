@@ -21,19 +21,20 @@ from torch_geometric.data import Batch
 from torch.utils.data._utils.collate import default_collate
 from torch.utils.data import random_split
 from ruamel.yaml import YAML
+from inference import test_main
 
 
-decay_lr_factor = 0.5
+decay_lr_factor = 0.3
 decay_lr_every = 10
-lr = 0.01
+lr = 0.00001
 epochs = 200
 end_epoch = 0
-lr = 0.01
+lr = 0.00001
 show_every = 20
 val_every = 5
 best_minade = float('inf')
 save_dir = './trained_params'
-date_record = "250822"
+date_record = "250825"
 global_step = 0
 
 class MinStepLR(optim.lr_scheduler.StepLR):
@@ -78,8 +79,9 @@ def collate_graph(batch_list):
     big_graph = Batch.from_data_list(batch_list)
 
     # 其余字段用默认 collate 拼出 [B, ...]
-    tensor_keys = ['gt_traj_point', 'gt_traj_point_token',
-                   'target_point', 'fuzzy_target_point']
+    # tensor_keys = ['gt_traj_point', 'gt_traj_point_token',
+    #                'target_point', 'fuzzy_target_point']
+    tensor_keys = ['gt_traj_point', 'gt_traj_point_token']
     tensor_dict = default_collate([{k: getattr(g, k) for k in tensor_keys}
                                    for g in batch_list])
 
@@ -96,13 +98,13 @@ def train(config_obj):
     # dataset_train = ParkingDataModuleReal(config_obj, is_train=1)
     # dataset_val = ParkingDataModuleReal(config_obj, is_train=0)
     full_dataset = ParkingDataModuleReal(config_obj, is_train=1)
-    train_size = int(0.8 * len(full_dataset))
+    train_size = int(0.9 * len(full_dataset))
     val_size = len(full_dataset) - train_size
 
 # 随机分割数据集
     dataset_train, dataset_val = random_split(full_dataset, [train_size, val_size], generator=torch.Generator().manual_seed(42))
-    train_loader = DataLoader(dataset_train, batch_size=config_obj.batch_size, shuffle=False, num_workers=config_obj.num_workers, collate_fn=collate_graph)
-    val_loader = DataLoader(dataset_val, batch_size= config_obj.batch_size, shuffle=False, num_workers=config_obj.num_workers, collate_fn=collate_graph)
+    train_loader = DataLoader(dataset_train, batch_size=config_obj.batch_size, shuffle=True, num_workers=config_obj.num_workers, collate_fn=collate_graph)
+    val_loader = DataLoader(dataset_val, batch_size= 1, shuffle=False, num_workers=config_obj.num_workers, collate_fn=collate_graph)
 
     max_id = 0
     for g in full_dataset.graph_dataset:
@@ -126,12 +128,14 @@ def train(config_obj):
     if config_obj.decoder_method == "transformer":
         traj_point_loss_func = TokenTrajPointLoss(config_obj)
     elif config_obj.decoder_method == "gru":
-         traj_point_loss_func = TrajPointLoss(config_obj)
+        traj_point_loss_func = TrajPointLoss(config_obj)
+
+    
     optimizer = optim.Adam(model.parameters(), lr=lr, weight_decay=1e-4)
     # scheduler = optim.lr_scheduler.StepLR(
     #     optimizer, step_size=decay_lr_every, gamma=decay_lr_factor)
-    # scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=50, eta_min=1e-6)
-    scheduler = MinStepLR(optimizer, step_size=decay_lr_every, gamma=decay_lr_factor,min_lr=1e-5)
+    scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=100)
+    # scheduler = MinStepLR(optimizer, step_size=decay_lr_every, gamma=decay_lr_factor,min_lr=1e-5)
     
 
 
@@ -178,6 +182,8 @@ def train(config_obj):
     # if curr_minade < best_minade:
     #     best_minade = curr_minade
     save_checkpoint(save_dir, model, optimizer, -1, best_minade, date_record)
+
+    # test_main(val_loader)
 
 
 def main():

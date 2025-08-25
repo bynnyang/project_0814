@@ -199,12 +199,12 @@ class ProcessMcapData:
         self.save_measurements(self.measurements, 1, measurement_tag="parking_goal")
 
 
-def assign_val(output_folder_train, output_folder_val):
+def assign_val(output_folder_train, output_folder):
     li = os.listdir(output_folder_train)
-    random_list = random.sample(li, max(len(li) // 10, 1))
+    random_list = random.sample(li, max(len(li) // 20, 1))
     for item in random_list:
         shutil.move(os.path.join(output_folder_train, item),
-                    os.path.join(output_folder_val, item))
+                    os.path.join(output_folder, item))
     
 def main():
     t_start = 0.0
@@ -214,8 +214,9 @@ def main():
     output_folder_path = "./e2e_dataset"
     output_folder_train = os.path.join(output_folder_path,"train")
     output_folder_val = os.path.join(output_folder_path,"val")
+    output_folder_test = os.path.join(output_folder_path,"test")
     os.makedirs(output_folder_train, exist_ok=True)
-    os.makedirs(output_folder_val, exist_ok=True)
+    os.makedirs(output_folder_test, exist_ok=True)
     for filename in tqdm.tqdm(os.listdir(mcap_directory)):
     # 检查文件扩展名
         if filename.endswith('.mcap'):
@@ -223,7 +224,7 @@ def main():
             mcap_file_path = os.path.join(mcap_directory, filename)
             data_process = ProcessMcapData(mcap_file_path, output_folder_train, t_start, t_end, time_step)
             data_process.process_data()
-    assign_val(output_folder_train, output_folder_val)
+    assign_val(output_folder_train, output_folder_test)
 
 
 # 示例用法

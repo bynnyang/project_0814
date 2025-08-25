@@ -21,6 +21,7 @@ class TrajectoryDecoder(nn.Module):
         tf_layer = nn.TransformerDecoderLayer(d_model=self.cfg.tf_de_dim, nhead=self.cfg.tf_de_heads)
         self.tf_decoder = nn.TransformerDecoder(tf_layer, num_layers=self.cfg.tf_de_layers)
         self.output = nn.Linear(self.cfg.tf_de_dim, self.cfg.token_nums + self.cfg.append_token)
+        self.out_drop = nn.Dropout(self.cfg.tf_de_dropout)
 
         self.init_weights()
 
@@ -58,6 +59,7 @@ class TrajectoryDecoder(nn.Module):
 
         pred_traj_points = self.decoder(encoder_out, tgt_embedding, tgt_mask, tgt_padding_mask)
         pred_traj_points = self.output(pred_traj_points)
+        pred_traj_points = self.out_drop(pred_traj_points)
         return pred_traj_points
     
     def predict(self, encoder_out, tgt):

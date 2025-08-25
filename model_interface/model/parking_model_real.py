@@ -29,7 +29,7 @@ class ParkingModelReal(nn.Module):
         self.subgraph = SubGraph(
             self.cfg.in_channels, self.cfg.num_subgraph_layers, self.cfg.subgraph_width, self.cfg.max_id)
         self.self_atten_layer = SelfAttentionLayer(
-            self.cfg.subgraph_width, self.cfg.global_graph_width, need_scale=False)
+            self.cfg.subgraph_width, self.cfg.global_graph_width)
 
         # Trajectory Decoder
         self.trajectory_decoder = self.get_trajectory_decoder()
@@ -44,7 +44,7 @@ class ParkingModelReal(nn.Module):
         out = self.self_atten_layer(x, valid_lens)
 
         # Decoder
-        pred_traj_point = self.trajectory_decoder(out[:, [0]].squeeze(1), data['gt_traj_point_token'].to(self.cfg.device))
+        pred_traj_point = self.trajectory_decoder(out[:, [0]].squeeze(1), data['gt_traj_point'].to(self.cfg.device))
 
         return pred_traj_point
 
@@ -74,7 +74,7 @@ class ParkingModelReal(nn.Module):
         out = self.self_atten_layer(x, valid_lens)
 
         # Decoder
-        autoregressive_point = self.trajectory_decoder(out[:, [0]].squeeze(1))
+        autoregressive_point = self.trajectory_decoder(out[:, [0]].squeeze(1)).squeeze()
         return autoregressive_point
 
     def encoder(self, data, mode):

@@ -15,7 +15,7 @@ check_val_every_n_epoch: 5
 epochs: 40
 learning_rate: 0.0001
 weight_decay: 0.00001
-batch_size: 256
+batch_size: 512
 num_workers: 8
 # resume_path: ""
 
@@ -57,21 +57,21 @@ decoder_method: "gru"
 tf_de_dim: 256
 tf_de_heads: 4
 tf_de_layers: 4
-tf_de_dropout: 0.05
+tf_de_dropout: 0.3
 
 
 in_channels: 11
-num_subgraph_layers: 3
-subgraph_width: 64
-global_graph_width: 128
-max_id: 35
-traj_norm_x_min: -3.869112730026245
-traj_norm_x_max: 5.683990955352783
-traj_norm_y_min: -1.7807115316390991
-traj_norm_y_max: 0.46774598956108093
+num_subgraph_layers: 9
+subgraph_width: 128
+global_graph_width: 256
+max_id: 49
+traj_norm_x_min: -4.1072468757629395
+traj_norm_x_max: 5.933374404907227
+traj_norm_y_min: -2.2096848487854004
+traj_norm_y_max: 0.5092376470565796
 graph_norm_x_min: -15.825324058532715
-graph_norm_x_max: 12.86481761932373
-graph_norm_y_min: -12.724677085876465
-graph_norm_y_max: 15.00223159790039
-graph_norm_theta_min: -3.1399855613708496
+graph_norm_x_max: 16.95151710510254
+graph_norm_y_min: -14.398101806640625
+graph_norm_y_max: 15.159072875976562
+graph_norm_theta_min: -3.1399965286254883
 graph_norm_theta_max: 3.139981746673584

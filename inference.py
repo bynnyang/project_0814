@@ -48,12 +48,12 @@ def collate_graph(batch_list):
 
     return big_graph
 
-def inference(inference_cfg: InferenceConfiguration):
+def inference(inference_cfg: InferenceConfiguration, test_loader):
     device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
     ParkingInferenceModelModule = get_parking_model(data_mode=inference_cfg.train_meta_config.data_mode, run_mode="inference")
     parking_inference_obj = ParkingInferenceModelModule(inference_cfg)
-    dataset_test = ParkingDataModuleReal(inference_cfg.train_meta_config, is_train=2)
-    test_loader = DataLoader(dataset_test, batch_size= 1, shuffle=False, num_workers=0, collate_fn=collate_graph)
+    # dataset_test = ParkingDataModuleReal(inference_cfg.train_meta_config, is_train=2)
+    # test_loader = DataLoader(dataset_test, batch_size= 1, shuffle=False, num_workers=0, collate_fn=collate_graph)
     count = 0
     for data in tqdm(test_loader):
         data.to(device)
@@ -71,10 +71,10 @@ def main():
 
     inference(inference_cfg)
 
-def test_main():
+def test_main(test_loader):
     inference_cfg = get_inference_config_obj('./config/inference_real.yaml')
 
-    inference(inference_cfg)
+    inference(inference_cfg, test_loader)
 
 
 if __name__ == '__main__':

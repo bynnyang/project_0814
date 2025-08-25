@@ -15,6 +15,26 @@ import pdb
 import os
 
 
+class ResBottleneck(nn.Module):
+    def __init__(self, in_channels, hidden_unit, dropout=0.1):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(in_channels, hidden_unit // 4),
+            nn.LayerNorm(hidden_unit // 4),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_unit // 4, hidden_unit // 4),
+            nn.LayerNorm(hidden_unit // 4),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_unit // 4, hidden_unit),
+            nn.Dropout(dropout)
+        )
+        self.skip = nn.Linear(in_channels, hidden_unit) if in_channels != hidden_unit else nn.Identity()
+
+    def forward(self, x):
+        return F.gelu(self.skip(x) + self.net(x))
+
 class SubGraph(nn.Module):
     """
     Subgraph that computes all vectors in a polyline, and get a polyline-level feature
@@ -31,14 +51,7 @@ class SubGraph(nn.Module):
 
         self.id_emb = nn.Embedding(max_id + 1, id_dim)
 
-        self.feature_encoder = nn.Sequential(
-            nn.Linear(in_channels, hidden_unit),
-            nn.ReLU(),
-            nn.Dropout(p=0.3),
-            nn.Linear(hidden_unit, hidden_unit),
-            nn.ReLU(),
-            nn.Dropout(p=0.3)
-        )
+        self.feature_encoder = ResBottleneck(in_channels, hidden_unit, dropout=0.2)
         
         # 输入层
         self.convs.append(GCNConv(hidden_unit, hidden_unit))
