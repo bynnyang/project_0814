@@ -19,15 +19,16 @@ from utils.eval import get_eval_metric_results
 from model_interface.model.parking_model_real import ParkingModelReal
 from torch_geometric.data import Batch
 from torch.utils.data._utils.collate import default_collate
+from torch.utils.data import random_split
+from ruamel.yaml import YAML
 
 
 decay_lr_factor = 0.5
-decay_lr_every = 5
-lr = 0.001
-epochs = 100
+decay_lr_every = 10
+lr = 0.01
+epochs = 200
 end_epoch = 0
-lr = 0.001
-in_channels, out_channels = 8, 60
+lr = 0.01
 show_every = 20
 val_every = 5
 best_minade = float('inf')
@@ -92,10 +93,32 @@ def train(config_obj):
     global best_minade
     device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
    
-    dataset_train = ParkingDataModuleReal(config_obj, is_train=1)
-    dataset_val = ParkingDataModuleReal(config_obj, is_train=0)
+    # dataset_train = ParkingDataModuleReal(config_obj, is_train=1)
+    # dataset_val = ParkingDataModuleReal(config_obj, is_train=0)
+    full_dataset = ParkingDataModuleReal(config_obj, is_train=1)
+    train_size = int(0.8 * len(full_dataset))
+    val_size = len(full_dataset) - train_size
+
+# 随机分割数据集
+    dataset_train, dataset_val = random_split(full_dataset, [train_size, val_size], generator=torch.Generator().manual_seed(42))
     train_loader = DataLoader(dataset_train, batch_size=config_obj.batch_size, shuffle=False, num_workers=config_obj.num_workers, collate_fn=collate_graph)
     val_loader = DataLoader(dataset_val, batch_size= config_obj.batch_size, shuffle=False, num_workers=config_obj.num_workers, collate_fn=collate_graph)
+
+    max_id = 0
+    for g in full_dataset.graph_dataset:
+        max_id = max(max_id, g.cluster.max().item())
+    # for g in dataset_val.graph_dataset:
+    #     max_id = max(max_id, g.cluster.max().item())
+    config_obj.max_id = max_id
+    yaml = YAML()
+    yaml.preserve_quotes = True    
+    yaml.width = 4096               
+
+    with open("./config/training_real.yaml", "r", encoding="utf-8") as f:
+        cfg_dict = yaml.load(f)
+    cfg_dict["max_id"] = int(max_id)
+    with open("./config/training_real.yaml", "w", encoding="utf-8") as f:
+        yaml.dump(cfg_dict, f)
 
     model = ParkingModelReal(config_obj)
     model = model.to(device=device)
@@ -104,11 +127,11 @@ def train(config_obj):
         traj_point_loss_func = TokenTrajPointLoss(config_obj)
     elif config_obj.decoder_method == "gru":
          traj_point_loss_func = TrajPointLoss(config_obj)
-    optimizer = optim.Adam(model.parameters(), lr=lr)
+    optimizer = optim.Adam(model.parameters(), lr=lr, weight_decay=1e-4)
     # scheduler = optim.lr_scheduler.StepLR(
     #     optimizer, step_size=decay_lr_every, gamma=decay_lr_factor)
     # scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=50, eta_min=1e-6)
-    scheduler = MinStepLR(optimizer, step_size=decay_lr_every, gamma=decay_lr_factor,min_lr=2e-6)
+    scheduler = MinStepLR(optimizer, step_size=decay_lr_every, gamma=decay_lr_factor,min_lr=1e-5)
     
 
 
@@ -147,6 +170,7 @@ def train(config_obj):
             if curr_minade < best_minade:
                 best_minade = curr_minade
                 save_checkpoint(save_dir, model, optimizer, epoch, best_minade, date_record)
+        model.train()
                 
     # eval result on the identity dataset
     # metrics = get_eval_metric_results(config_obj, model, val_loader, device)
@@ -158,6 +182,8 @@ def train(config_obj):
 
 def main():
     seed_everything(16)
+    torch.backends.cuda.matmul.allow_tf32 = False
+    torch.backends.cudnn.allow_tf32 = False
     arg_parser = argparse.ArgumentParser()
     arg_parser.add_argument('--config', default='./config/training_real.yaml', type=str)
     args = arg_parser.parse_args()

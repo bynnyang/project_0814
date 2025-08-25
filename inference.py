@@ -71,6 +71,11 @@ def main():
 
     inference(inference_cfg)
 
+def test_main():
+    inference_cfg = get_inference_config_obj('./config/inference_real.yaml')
+
+    inference(inference_cfg)
+
 
 if __name__ == '__main__':
     main()

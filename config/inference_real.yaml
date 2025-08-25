@@ -1,4 +1,4 @@
-model_ckpt_path: "./trained_params/epoch_99.valminade_0.578.250822.ParkE2E.pth"
+model_ckpt_path: "./trained_params/epoch_99.valminade_0.029.250822.ParkE2E.pth"
 training_config: "training_real"
 predict_mode: "topic"
 

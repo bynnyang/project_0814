@@ -10,17 +10,20 @@ class GRUTrajectoryDecoder(nn.Module):
 
         self.cfg = cfg
         self.predict_num = self.cfg.autoregressive_points
-        self.hidden_size = 3000
+        self.hidden_size = 256
 
         # waypoints prediction
         self.join = nn.Sequential(
             # nn.Linear(int(self.cfg.final_dim[0] * self.cfg.final_dim[1]), 512),
-            nn.Linear(int(self.cfg.final_dim[0]), 512),
+            nn.Linear(int(128), 512),
             nn.ReLU(inplace=True),
+            nn.Dropout(0.3), 
             nn.Linear(512, 256),
             nn.ReLU(inplace=True),
+            nn.Dropout(0.3), 
             nn.Linear(256, self.hidden_size),
             nn.ReLU(inplace=True),
+            nn.Dropout(0.3), 
         )
 
         self.predict_item_number = self.cfg.item_number

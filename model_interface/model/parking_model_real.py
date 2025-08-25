@@ -27,7 +27,7 @@ class ParkingModelReal(nn.Module):
 
         # self.polyline_vec_shape = self.cfg.in_channels * (2 ** self.cfg.num_subgraph_layers)
         self.subgraph = SubGraph(
-            self.cfg.in_channels, self.cfg.num_subgraph_layers, self.cfg.subgraph_width)
+            self.cfg.in_channels, self.cfg.num_subgraph_layers, self.cfg.subgraph_width, self.cfg.max_id)
         self.self_atten_layer = SelfAttentionLayer(
             self.cfg.subgraph_width, self.cfg.global_graph_width, need_scale=False)
 
@@ -74,7 +74,7 @@ class ParkingModelReal(nn.Module):
         out = self.self_atten_layer(x, valid_lens)
 
         # Decoder
-        autoregressive_point = self.trajectory_decoder(out[:, [0]].squeeze(1)).squeeze()
+        autoregressive_point = self.trajectory_decoder(out[:, [0]].squeeze(1))
         return autoregressive_point
 
     def encoder(self, data, mode):

@@ -15,7 +15,7 @@ check_val_every_n_epoch: 5
 epochs: 40
 learning_rate: 0.0001
 weight_decay: 0.00001
-batch_size: 128
+batch_size: 256
 num_workers: 8
 # resume_path: ""
 
@@ -39,10 +39,10 @@ bev_down_sample: 8
 backbone: "efficientnet-b4"
 
 ##################### Target #####################
-add_noise_to_target: True
+add_noise_to_target: true
 target_noise_threshold: 0.5
 target_range: 1.4
-use_fuzzy_target: False
+use_fuzzy_target: false
 
 ##################### BEV Query #####################
 fusion_method: "query"
@@ -60,7 +60,18 @@ tf_de_layers: 4
 tf_de_dropout: 0.05
 
 
-in_channels: 4 
-num_subgraph_layers: 9
-subgraph_width: 256
-global_graph_width: 256
+in_channels: 11
+num_subgraph_layers: 3
+subgraph_width: 64
+global_graph_width: 128
+max_id: 35
+traj_norm_x_min: -3.869112730026245
+traj_norm_x_max: 5.683990955352783
+traj_norm_y_min: -1.7807115316390991
+traj_norm_y_max: 0.46774598956108093
+graph_norm_x_min: -15.825324058532715
+graph_norm_x_max: 12.86481761932373
+graph_norm_y_min: -12.724677085876465
+graph_norm_y_max: 15.00223159790039
+graph_norm_theta_min: -3.1399855613708496
+graph_norm_theta_max: 3.139981746673584

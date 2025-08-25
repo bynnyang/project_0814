@@ -11,6 +11,7 @@ from utils.trajectory_utils import TrajectoryInfoParser, tokenize_traj_point
 from dataset import GraphData
 from dataset import GraphDataset
 import json
+from ruamel.yaml import YAML
 
 class ParkingDataModuleReal(torch.utils.data.Dataset):
     def __init__(self, config: Configuration, is_train):
@@ -43,7 +44,59 @@ class ParkingDataModuleReal(torch.utils.data.Dataset):
         # self.graph_dataset = torch.load(self.dataptpath, weights_only=False)
         self.graph_dataset = GraphDataset(self.dataptpath)
         # self.peace = self.graph_dataset[0][1]['x']
-        self.acb = 1
+        if is_train == 1:
+            all_x = self.traj_point[:, 0::2]          # 已 flatten，每样本 (30*2,)
+            all_y = self.traj_point[:, 1::2]
+            self.traj_x_min, self.traj_x_max = all_x.min(), all_x.max()
+            self.traj_y_min, self.traj_y_max = all_y.min(), all_y.max()
+            # 可选：把统计量写进 config，让验证/测试集直接复用
+            config.traj_norm_x_min, config.traj_norm_x_max = self.traj_x_min, self.traj_x_max
+            config.traj_norm_y_min, config.traj_norm_y_max = self.traj_y_min, self.traj_y_max
+
+
+            all_nodes = []
+            for g in self.graph_dataset:
+                all_nodes.append(g.x[:, :3])      # 取前3列：x,y,heading
+            all_nodes = torch.cat(all_nodes, dim=0)
+
+            self.graph_norm_x_min = all_nodes[:, 0].min().item()
+            self.graph_norm_x_max = all_nodes[:, 0].max().item()
+            self.graph_norm_y_min = all_nodes[:, 1].min().item()
+            self.graph_norm_y_max = all_nodes[:, 1].max().item()
+            self.graph_norm_theta_min = all_nodes[:, 2].min().item()
+            self.graph_norm_theta_max = all_nodes[:, 2].max().item()
+
+            config.graph_norm_x_min, config.graph_norm_x_max = self.graph_norm_x_min, self.graph_norm_x_max
+            config.graph_norm_y_min, config.graph_norm_y_max = self.graph_norm_y_min, self.graph_norm_y_max
+            config.graph_norm_theta_min, config.graph_norm_theta_max = self.graph_norm_theta_min, self.graph_norm_theta_max
+            yaml = YAML()
+            yaml.preserve_quotes = True    
+            yaml.width = 4096               
+
+            with open("./config/training_real.yaml", "r", encoding="utf-8") as f:
+                cfg_dict = yaml.load(f)
+            cfg_dict["traj_norm_x_min"] = float(config.traj_norm_x_min)
+            cfg_dict["traj_norm_x_max"] = float(config.traj_norm_x_max)
+            cfg_dict["traj_norm_y_min"] = float(config.traj_norm_y_min)
+            cfg_dict["traj_norm_y_max"] = float(config.traj_norm_y_max)
+            cfg_dict["graph_norm_x_min"] = float(config.graph_norm_x_min)
+            cfg_dict["graph_norm_x_max"] = float(config.graph_norm_x_max)
+            cfg_dict["graph_norm_y_min"] = float(config.graph_norm_y_min)
+            cfg_dict["graph_norm_y_max"] = float(config.graph_norm_y_max)
+            cfg_dict["graph_norm_theta_min"] = float(config.graph_norm_theta_min)
+            cfg_dict["graph_norm_theta_max"] = float(config.graph_norm_theta_max)
+            with open("./config/training_real.yaml", "w", encoding="utf-8") as f:
+                yaml.dump(cfg_dict, f)   
+
+        else:
+            self.traj_x_min, self.traj_x_max = config.traj_norm_x_min, config.traj_norm_x_max
+            self.traj_y_min, self.traj_y_max = config.traj_norm_y_min, config.traj_norm_y_max
+
+            self.graph_norm_x_min, self.graph_norm_x_max = config.graph_norm_x_min, config.graph_norm_x_max
+            self.graph_norm_y_min, self.graph_norm_y_max = config.graph_norm_y_min, config.graph_norm_y_max
+            self.graph_norm_theta_min, self.graph_norm_theta_max = config.graph_norm_theta_min, config.graph_norm_theta_max   
+
+
 
     def __len__(self):
         return len(self.traj_point)
@@ -51,8 +104,18 @@ class ParkingDataModuleReal(torch.utils.data.Dataset):
     def __getitem__(self, index):
         g: GraphData = self.graph_dataset[index]  # 这是 GraphData 实例
 
+        x = g.x.clone()
+
+        x[:, 0] = (x[:, 0] - self.graph_norm_x_min) / (self.graph_norm_x_max - self.graph_norm_x_min)
+        x[:, 1] = (x[:, 1] - self.graph_norm_y_min) / (self.graph_norm_y_max - self.graph_norm_y_min)
+        x[:, 2] = (x[:, 2] - self.graph_norm_theta_min) / (self.graph_norm_theta_max - self.graph_norm_theta_min)
+        g.x = x
         # 把轨迹/目标等张量挂到图上成为额外属性
-        g.gt_traj_point        = torch.from_numpy(np.array(self.traj_point[index]))
+        traj = self.traj_point[index].copy()
+        traj[0::2] = (traj[0::2] - self.traj_x_min) / (self.traj_x_max - self.traj_x_min)
+        traj[1::2] = (traj[1::2] - self.traj_y_min) / (self.traj_y_max - self.traj_y_min)
+        # g.gt_traj_point        = torch.from_numpy(np.array(self.traj_point[index]))
+        g.gt_traj_point        = torch.from_numpy(traj.astype(np.float32))
         g.gt_traj_point_token  = torch.from_numpy(np.array(self.traj_point_token[index]))
         g.target_point         = torch.from_numpy(self.target_point[index])
         g.fuzzy_target_point   = torch.from_numpy(self.fuzzy_target_point[index])

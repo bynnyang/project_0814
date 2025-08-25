@@ -78,6 +78,20 @@ class Configuration:
     use_depth_distribution: bool = False
     tf_en_motion_length: str = None
 
+    graph_norm_x_min: float = None
+    graph_norm_x_max: float = None
+    graph_norm_y_min: float = None
+    graph_norm_y_max: float = None
+    graph_norm_theta_min: float = None
+    graph_norm_theta_max: float = None
+
+    traj_norm_x_min: float = None
+    traj_norm_x_max: float = None
+    traj_norm_y_min: float = None
+    traj_norm_y_max: float = None
+
+    max_id: int = None
+
 
 
 @dataclass

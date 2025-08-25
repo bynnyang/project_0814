@@ -187,8 +187,9 @@ class GraphDataset(InMemoryDataset):
         padd_to_index = np.max(valid_len_ls)
         feature_len = data_ls[0][0].shape[1]
         for ind, tup in enumerate(data_ls):
-            tup[0] = np.vstack(
-                [tup[0], np.zeros((padd_to_index - tup[-2].max(), feature_len), dtype=tup[0].dtype)])
+            pad_matrix = np.zeros((padd_to_index - tup[-2].max(), feature_len), dtype=tup[0].dtype)
+            pad_matrix[:, -1] = np.arange(tup[-2].max() + 1, padd_to_index + 1)
+            tup[0] = np.vstack([tup[0], pad_matrix])
             tup[-2] = np.hstack(
                 [tup[2], np.arange(tup[-2].max()+1, padd_to_index+1)])
             g_data = GraphData(

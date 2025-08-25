@@ -20,18 +20,24 @@ class SubGraph(nn.Module):
     Subgraph that computes all vectors in a polyline, and get a polyline-level feature
     """
 
-    def __init__(self, in_channels, num_subgraph_layres=9, hidden_unit=256, dropout=0.1, use_residual=True, use_norm=True):
+    def __init__(self, in_channels, num_subgraph_layres=9, hidden_unit=256, max_id = 64, dropout=0.3, use_residual=True, use_norm=True):
         super(SubGraph, self).__init__()
         self.convs = nn.ModuleList()
         self.norms = nn.ModuleList() if use_norm else None
         self.dropout = dropout
         self.use_residual = use_residual
+   
+        id_dim  = 8                 # 嵌入后的维度
+
+        self.id_emb = nn.Embedding(max_id + 1, id_dim)
 
         self.feature_encoder = nn.Sequential(
             nn.Linear(in_channels, hidden_unit),
             nn.ReLU(),
+            nn.Dropout(p=0.3),
             nn.Linear(hidden_unit, hidden_unit),
-            nn.ReLU()
+            nn.ReLU(),
+            nn.Dropout(p=0.3)
         )
         
         # 输入层
@@ -57,7 +63,16 @@ class SubGraph(nn.Module):
         args:
             sub_data (Data): [x, y, cluster, edge_index, valid_len]
         """
-        encoder_x = self.feature_encoder(sub_data.x)
+
+        geo_feat = sub_data.x[:, :3]                     # 几何特征 (N,3)
+        id_index = sub_data.x[:, 3].long()               # id 列 (N,)
+        id_feat  = self.id_emb(id_index)             # (N, 8)
+
+        # 拼接
+        node_feat = torch.cat([geo_feat, id_feat], dim=-1)  # (N, 11)
+
+
+        encoder_x = self.feature_encoder(node_feat)
 
         data = sub_data
         x, edge_index = encoder_x, data.edge_index
