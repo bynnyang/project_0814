@@ -11,7 +11,7 @@ from loss.traj_point_loss import TokenTrajPointLoss
 from loss.traj_point_loss import TrajPointLoss
 
 
-def get_eval_metric_results(config_obj, model, data_loader, device):
+def get_eval_metric_results(config_obj, model, data_loader, device, global_step):
  
     model.eval()
     traj_point_loss_func = None
@@ -26,7 +26,7 @@ def get_eval_metric_results(config_obj, model, data_loader, device):
                 if isinstance(val, torch.Tensor):
                     data[key] = val.to(device)
             out = model(data)
-            loss+=traj_point_loss_func(out, data)
+            loss+=traj_point_loss_func(out, data, global_step)
         loss = loss / len(data_loader)
         return loss
 

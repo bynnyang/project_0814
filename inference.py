@@ -37,8 +37,7 @@ def collate_graph(batch_list):
     big_graph = Batch.from_data_list(batch_list)
 
     # 其余字段用默认 collate 拼出 [B, ...]
-    tensor_keys = ['gt_traj_point', 'gt_traj_point_token',
-                   'target_point', 'fuzzy_target_point']
+    tensor_keys = ['gt_traj_point', 'gt_traj_point_token']
     tensor_dict = default_collate([{k: getattr(g, k) for k in tensor_keys}
                                    for g in batch_list])
 

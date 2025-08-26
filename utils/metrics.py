@@ -14,6 +14,8 @@ class CustomizedMetric:
 
     def calculate_distance(self, pred_traj_point, batch):
         distance_dict = {}
+        if self.cfg.batch_size != batch.batch_size:
+            return distance_dict
 
         if self.cfg.decoder_method == "transformer":
             prediction_points = self.get_predict_points(pred_traj_point)

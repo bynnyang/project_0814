@@ -1,6 +1,7 @@
 from torch import nn
 
 from utils.config import Configuration
+from utils.metrics import CustomizedMetric
 
 
 class TokenTrajPointLoss(nn.Module):
@@ -10,12 +11,18 @@ class TokenTrajPointLoss(nn.Module):
         self.PAD_token = self.cfg.token_nums + self.cfg.append_token - 1
         self.ce_loss = nn.CrossEntropyLoss(ignore_index=self.PAD_token)
 
-    def forward(self, pred, data):
+    def forward(self, pred, data, global_step):
+        pre_raw = pred
         pred = pred[:, :-1,:]
         pred_traj_point = pred.reshape(-1, pred.shape[-1])
         gt_traj_point_token = data['gt_traj_point_token'][:, 1:-1].reshape(-1).to(self.cfg.device)
-
         traj_point_loss = self.ce_loss(pred_traj_point, gt_traj_point_token)
+        if (global_step + 1) % 20 == 0:
+            val_loss_dict = {}
+            val_loss_dict.update({"val_loss": traj_point_loss})
+            customized_metric = CustomizedMetric(self.cfg, pre_raw, data)
+            val_loss_dict.update(customized_metric.calculate_distance(pre_raw, data))
+            print(val_loss_dict)
         return traj_point_loss
 
 

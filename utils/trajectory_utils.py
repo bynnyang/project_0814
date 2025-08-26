@@ -55,6 +55,34 @@ class TrajectoryInfoParser:
     
     def get_trajectory_point(self, point_index) -> CustomizePose:
         return self.trajectory_list[point_index]
+    
+
+    def get_trajectory_point_by_s(self, edge_index, ds) -> CustomizePose:
+        if ds == self.trajectory_list[edge_index].s :
+            return self.trajectory_list[edge_index]
+        
+        if ds >= self.trajectory_list[-1].s:
+            return self.trajectory_list[-1]
+        
+        lerp_index = 0
+        for index in range(edge_index, self.total_frames-1):
+            if (ds >= self.trajectory_list[index].s) and (ds < self.trajectory_list[index + 1].s):
+                lerp_index = index
+
+        point_index_left =  self.trajectory_list[lerp_index]
+        point_index_right =  self.trajectory_list[lerp_index+1]
+
+        ratio = (ds - point_index_left.s) / max((point_index_right.s - point_index_left.s), 1e-6)
+
+        new_x = point_index_left.x + ratio * (point_index_right.x - point_index_left.x)
+        new_y = point_index_left.y + ratio * (point_index_right.y - point_index_left.y)
+        new_yaw = point_index_left.yaw + ratio * (point_index_right.yaw - point_index_left.yaw)
+        new_s = point_index_left.s + ratio * (point_index_right.s - point_index_left.s)
+
+        new_point = CustomizePose(new_x, new_y, 0, 0, new_yaw, 0, new_s)
+
+
+        return new_point
 
     def get_progress(self, index) -> float:
         return self.progress_list[index]
@@ -99,7 +127,7 @@ class TrajectoryInfoParser:
         trajectory_list = []
         for frame in range(0, self.total_frames):
             data = get_json_content(self.get_measurement_path(frame))
-            cur_pose = CustomizePose(x=data["x"], y=data["y"], z=0.0, roll=0.0, yaw=data["yaw"]/3.14*180, pitch=0.0)
+            cur_pose = CustomizePose(x=data["x"], y=data["y"], z=0.0, roll=0.0, yaw=data["yaw"]/3.14*180, pitch=0.0, s = data["s"])
             trajectory_list.append(cur_pose)
         return trajectory_list
 

@@ -79,3 +79,22 @@ class SelfAttentionLayer(nn.Module):
         mask = torch.arange(x.size(1), device=x.device)[None, :] > valid_len[:, None]
         out, _ = self.mha(x, x, x, key_padding_mask=mask)
         return self.norm(out + x)   # 残差 + LayerNorm
+    
+
+class MultiLayerSelfAttention(nn.Module):
+    def __init__(self, in_channels, global_graph_width, num_layers=3, num_heads=8):
+        super().__init__()
+        assert global_graph_width % num_heads == 0
+        
+        self.layers = nn.ModuleList()
+        # 第一层需要处理输入通道到隐藏层的转换
+        self.layers.append(SelfAttentionLayer(in_channels, global_graph_width, num_heads))
+        
+        # 添加额外的层（输入和输出维度相同）
+        for _ in range(1, num_layers):
+            self.layers.append(SelfAttentionLayer(global_graph_width, global_graph_width, num_heads))
+
+    def forward(self, x, valid_len):
+        for layer in self.layers:
+            x = layer(x, valid_len)
+        return x

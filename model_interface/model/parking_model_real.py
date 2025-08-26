@@ -5,7 +5,7 @@ from model_interface.model.bev_encoder import BevEncoder, BevQuery
 from model_interface.model.gru_trajectory_decoder import GRUTrajectoryDecoder
 from model_interface.model.trajectory_decoder import TrajectoryDecoder
 from model_interface.model.subgraph import SubGraph
-from model_interface.model.selfatten import SelfAttentionLayer
+from model_interface.model.selfatten import MultiLayerSelfAttention
 from utils.config import Configuration
 
 
@@ -28,7 +28,7 @@ class ParkingModelReal(nn.Module):
         # self.polyline_vec_shape = self.cfg.in_channels * (2 ** self.cfg.num_subgraph_layers)
         self.subgraph = SubGraph(
             self.cfg.in_channels, self.cfg.num_subgraph_layers, self.cfg.subgraph_width, self.cfg.max_id)
-        self.self_atten_layer = SelfAttentionLayer(
+        self.self_atten_layer = MultiLayerSelfAttention(
             self.cfg.subgraph_width, self.cfg.global_graph_width)
 
         # Trajectory Decoder
@@ -44,7 +44,7 @@ class ParkingModelReal(nn.Module):
         out = self.self_atten_layer(x, valid_lens)
 
         # Decoder
-        pred_traj_point = self.trajectory_decoder(out[:, [0]].squeeze(1), data['gt_traj_point'].to(self.cfg.device))
+        pred_traj_point = self.trajectory_decoder(out[:,[0]], data['gt_traj_point_token'].to(self.cfg.device))
 
         return pred_traj_point
 
@@ -59,7 +59,7 @@ class ParkingModelReal(nn.Module):
         # Auto Regressive Decoder
         autoregressive_point = data['gt_traj_point_token'].to(self.cfg.device) # During inference, we regard BOS as gt_traj_point_token.
         for _ in range(predict_token_num):
-            pred_traj_point = self.trajectory_decoder.predict(out, autoregressive_point)
+            pred_traj_point = self.trajectory_decoder.predict(out[:,[0]], autoregressive_point)
             autoregressive_point = torch.cat([autoregressive_point, pred_traj_point], dim=1)
 
         return autoregressive_point

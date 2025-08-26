@@ -15,7 +15,7 @@ check_val_every_n_epoch: 5
 epochs: 40
 learning_rate: 0.0001
 weight_decay: 0.00001
-batch_size: 512
+batch_size: 8
 num_workers: 8
 # resume_path: ""
 
@@ -23,9 +23,9 @@ num_workers: 8
 autoregressive_points: 30
 traj_downsample_stride: 3
 item_number: 2
-token_nums: 1200
+token_nums: 300
 append_token: 3
-xy_max: 12
+xy_max: 3
 process_dim: [256, 256]
 
 ##################### BEV Encoder #####################
@@ -53,25 +53,25 @@ query_en_dropout: 0.05
 query_en_bev_length: 256
 
 ##################### Decoder #####################
-decoder_method: "gru"
+decoder_method: "transformer"
 tf_de_dim: 256
 tf_de_heads: 4
 tf_de_layers: 4
-tf_de_dropout: 0.3
+tf_de_dropout: 0.0001
 
 
 in_channels: 11
 num_subgraph_layers: 9
 subgraph_width: 128
 global_graph_width: 256
-max_id: 49
-traj_norm_x_min: -4.1072468757629395
-traj_norm_x_max: 5.933374404907227
-traj_norm_y_min: -2.2096848487854004
-traj_norm_y_max: 0.5092376470565796
+max_id: 35
+traj_norm_x_min: -2.858642339706421
+traj_norm_x_max: 2.899733781814575
+traj_norm_y_min: -0.9972971677780151
+traj_norm_y_max: 0.46301010251045227
 graph_norm_x_min: -15.825324058532715
-graph_norm_x_max: 16.95151710510254
-graph_norm_y_min: -14.398101806640625
-graph_norm_y_max: 15.159072875976562
-graph_norm_theta_min: -3.1399965286254883
+graph_norm_x_max: 12.86481761932373
+graph_norm_y_min: -12.724677085876465
+graph_norm_y_max: 15.00223159790039
+graph_norm_theta_min: -3.1399855613708496
 graph_norm_theta_max: 3.139981746673584

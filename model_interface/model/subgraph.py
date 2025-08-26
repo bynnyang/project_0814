@@ -20,15 +20,15 @@ class ResBottleneck(nn.Module):
         super().__init__()
         self.net = nn.Sequential(
             nn.Linear(in_channels, hidden_unit // 4),
-            nn.LayerNorm(hidden_unit // 4),
+            # nn.LayerNorm(hidden_unit // 4),
             nn.GELU(),
-            nn.Dropout(dropout),
+            # nn.Dropout(dropout),
             nn.Linear(hidden_unit // 4, hidden_unit // 4),
-            nn.LayerNorm(hidden_unit // 4),
+            # nn.LayerNorm(hidden_unit // 4),
             nn.GELU(),
-            nn.Dropout(dropout),
+            # nn.Dropout(dropout),
             nn.Linear(hidden_unit // 4, hidden_unit),
-            nn.Dropout(dropout)
+            # nn.Dropout(dropout)
         )
         self.skip = nn.Linear(in_channels, hidden_unit) if in_channels != hidden_unit else nn.Identity()
 
@@ -40,7 +40,7 @@ class SubGraph(nn.Module):
     Subgraph that computes all vectors in a polyline, and get a polyline-level feature
     """
 
-    def __init__(self, in_channels, num_subgraph_layres=9, hidden_unit=256, max_id = 64, dropout=0.3, use_residual=True, use_norm=True):
+    def __init__(self, in_channels, num_subgraph_layres=9, hidden_unit=256, max_id = 64, dropout=0.0001, use_residual=True, use_norm=True):
         super(SubGraph, self).__init__()
         self.convs = nn.ModuleList()
         self.norms = nn.ModuleList() if use_norm else None
@@ -51,7 +51,7 @@ class SubGraph(nn.Module):
 
         self.id_emb = nn.Embedding(max_id + 1, id_dim)
 
-        self.feature_encoder = ResBottleneck(in_channels, hidden_unit, dropout=0.2)
+        self.feature_encoder = ResBottleneck(in_channels, hidden_unit, dropout=0.0002)
         
         # 输入层
         self.convs.append(GCNConv(hidden_unit, hidden_unit))

@@ -187,11 +187,12 @@ class ParkingDataModuleReal(torch.utils.data.Dataset):
     def create_predict_point_gt(self, traje_info_obj: TrajectoryInfoParser, ego_index: int, world2ego_mat: np.array, switch_side: float, filename: str) -> List[int]:
         predict_point, predict_point_token = [], []
         for predict_index in range(self.cfg.autoregressive_points):  # predict iteration
+            ds = 0.1 * predict_index + traje_info_obj.get_trajectory_point(ego_index).s
             predict_stride_index = self.get_clip_stride_index(predict_index = predict_index, 
                                                                 start_index=ego_index, 
                                                                 max_index=traje_info_obj.total_frames - 1, 
                                                                 stride=self.cfg.traj_downsample_stride)
-            predict_pose_in_world = traje_info_obj.get_trajectory_point(predict_stride_index)
+            predict_pose_in_world = traje_info_obj.get_trajectory_point_by_s(ego_index, ds)
             predict_pose_in_ego = predict_pose_in_world.get_pose_in_ego(world2ego_mat)
             predict_pose_in_ego.y = predict_pose_in_ego.y * switch_side
             progress = traje_info_obj.get_progress(predict_stride_index)
@@ -201,7 +202,7 @@ class ParkingDataModuleReal(torch.utils.data.Dataset):
             tokenize_ret_process = tokenize_ret[:2] if self.cfg.item_number == 2 else tokenize_ret
             predict_point_token.append(tokenize_ret_process)
 
-            if predict_stride_index == traje_info_obj.total_frames - 1 or predict_index == self.cfg.autoregressive_points - 1:
+            if predict_pose_in_world.s == traje_info_obj.get_trajectory_point(traje_info_obj.total_frames - 1).s or predict_index == self.cfg.autoregressive_points - 1:
                 break
 
         predict_point_gt = [item for sublist in predict_point for item in sublist]
@@ -257,4 +258,4 @@ class ParkingDataModuleReal(torch.utils.data.Dataset):
         self.task_index_list = np.array(self.task_index_list).astype(np.int64)
 
     def get_clip_stride_index(self, predict_index, start_index, max_index, stride):
-        return int(np.clip(start_index + stride * (1 + predict_index), 0, max_index))
+        return int(np.clip(start_index + stride * (0 + predict_index), 0, max_index))

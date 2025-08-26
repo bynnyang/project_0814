@@ -4,7 +4,7 @@ import json
 import random
 import shutil
 import tqdm
-
+import math
 
 class Car_info:
     def __init__(self, pose_x, pose_y, pose_heading, car_gear, velocity):
@@ -138,13 +138,14 @@ class ProcessMcapData:
             json.dump(measurements, json_file, indent=4)
 
 
-    def parser_measurements_msg(self, msg):
+    def parser_measurements_msg(self, msg, s):
         pose_ret = {
             'x':msg.pose_x,
             'y':msg.pose_y,
             'yaw':msg.pose_heading,
             'velocity':msg.vel,
             'gear':msg.car_gear,
+            's': s
         }
 
         return pose_ret
@@ -190,8 +191,16 @@ class ProcessMcapData:
             seen_values.add(signature)
             self.car_info_data_unique[key] = value
         num_cnt = 0
+        first_key, first_value = next(iter(self.car_info_data_unique.items()))
+        last_x_ = first_value.pose_x
+        last_y_ = first_value.pose_y
+        s = 0
         for key, value in self.car_info_data_unique.items():
-            self.measurements = self.parser_measurements_msg(value)
+            ds = math.hypot(value.pose_x - last_x_, value.pose_y - last_y_)
+            s = s + ds
+            self.measurements = self.parser_measurements_msg(value, s)
+            last_x_ = value.pose_x
+            last_y_ = value.pose_y
             self.save_measurements(self.measurements, num_cnt)
             self.clusters = self.parser_clusters_msg(key)
             self.save_measurements(self.clusters, num_cnt,measurement_tag="clusters")

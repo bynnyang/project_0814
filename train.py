@@ -26,10 +26,10 @@ from inference import test_main
 
 decay_lr_factor = 0.3
 decay_lr_every = 10
-lr = 0.00001
+lr = 0.0001
 epochs = 200
 end_epoch = 0
-lr = 0.00001
+lr = 0.0001
 show_every = 20
 val_every = 5
 best_minade = float('inf')
@@ -104,7 +104,7 @@ def train(config_obj):
 # 随机分割数据集
     dataset_train, dataset_val = random_split(full_dataset, [train_size, val_size], generator=torch.Generator().manual_seed(42))
     train_loader = DataLoader(dataset_train, batch_size=config_obj.batch_size, shuffle=True, num_workers=config_obj.num_workers, collate_fn=collate_graph)
-    val_loader = DataLoader(dataset_val, batch_size= 1, shuffle=False, num_workers=config_obj.num_workers, collate_fn=collate_graph)
+    val_loader = DataLoader(dataset_val, batch_size= config_obj.batch_size, shuffle=False, num_workers=config_obj.num_workers, collate_fn=collate_graph)
 
     max_id = 0
     for g in full_dataset.graph_dataset:
@@ -153,7 +153,7 @@ def train(config_obj):
             data.to(device)
             optimizer.zero_grad()
             out = model(data)
-            loss = traj_point_loss_func(out, data)
+            loss = traj_point_loss_func(out, data, global_step)
             loss.backward()
             acc_loss += config_obj.batch_size * loss.item()
             num_samples += data["gt_traj_point_token"].shape[0]
@@ -164,10 +164,9 @@ def train(config_obj):
         scheduler.step()
         print(
             f"loss at epoch {epoch}:{acc_loss / num_samples:.3f}, lr:{optimizer.state_dict()['param_groups'][0]['lr']: .6f}, time:{time.time() - start_tic: 4f}sec")
-        
         if (epoch+1) % val_every == 0 and (not epoch < end_epoch):
             print("eval as epoch:{epoch}")
-            metrics = get_eval_metric_results(config_obj, model, val_loader, device)
+            metrics = get_eval_metric_results(config_obj, model, val_loader, device, 19)
             curr_minade = metrics
             print(f"minADE:{metrics:3f}")
 

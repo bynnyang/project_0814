@@ -15,10 +15,10 @@ class GRUTrajectoryDecoder(nn.Module):
 
 
         self.join = nn.Sequential(
-            nn.Linear(256, 256),
-            nn.LayerNorm(256),
+            nn.Linear(512, 256),
+            # nn.LayerNorm(256),
             nn.GELU(),
-            nn.Dropout(0.3),
+            # nn.Dropout(0.3),
             nn.Linear(256, self.hidden_size)
         )
 
@@ -26,7 +26,7 @@ class GRUTrajectoryDecoder(nn.Module):
         
         
 
-        self.decoder = nn.GRU(input_size=self.predict_item_number, hidden_size=self.hidden_size, num_layers=self.num_layers, batch_first=True, dropout=0.1)
+        self.decoder = nn.GRU(input_size=self.predict_item_number, hidden_size=self.hidden_size, num_layers=self.num_layers, batch_first=True, dropout=0.00001)
 
     
 
@@ -47,7 +47,7 @@ class GRUTrajectoryDecoder(nn.Module):
         z = torch.flatten(z, 1)
         h0 = self.join(z).unsqueeze(0).repeat(self.num_layers, 1, 1)  # 2层GRU
 
-        use_teacher_forcing = True if (self.training and data_gt is not None and torch.rand(1).item() < teacher_forcing_ratio) else False
+        use_teacher_forcing = False if (self.training and data_gt is not None and torch.rand(1).item() < teacher_forcing_ratio) else False
         
         if data_gt != None:
             y_gt = data_gt.reshape(data_gt.size(0), self.predict_num, self.cfg.item_number)

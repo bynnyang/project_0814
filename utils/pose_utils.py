@@ -104,13 +104,14 @@ class HomogeneousTrans(PoseFlow):
     
 
 class CustomizePose:
-    def __init__(self, x, y, z, roll, yaw, pitch):
+    def __init__(self, x, y, z, roll, yaw, pitch, s = 0.0):
         self.x = x
         self.y = y
         self.z = z
         self.roll = roll
         self.yaw = yaw
         self.pitch = pitch
+        self.s = s
 
     def get_pose_in_ego(self, world2ego_mat: np.array):
         pose2world_mat = self.get_homogeneous_transformation().get_matrix()
