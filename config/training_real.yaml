@@ -15,7 +15,7 @@ check_val_every_n_epoch: 5
 epochs: 40
 learning_rate: 0.0001
 weight_decay: 0.00001
-batch_size: 512
+batch_size: 32
 num_workers: 8
 # resume_path: ""
 
@@ -53,7 +53,7 @@ query_en_dropout: 0.05
 query_en_bev_length: 256
 
 ##################### Decoder #####################
-decoder_method: "gru"
+decoder_method: "transformer"
 tf_de_dim: 256
 tf_de_heads: 4
 tf_de_layers: 4

@@ -12,6 +12,8 @@ from dataset import GraphData
 from dataset import GraphDataset
 import json
 from ruamel.yaml import YAML
+from utils.vec2d import Vec2d
+from utils.box2d import Box2d
 
 class ParkingDataModuleReal(torch.utils.data.Dataset):
     def __init__(self, config: Configuration, is_train):
@@ -31,6 +33,7 @@ class ParkingDataModuleReal(torch.utils.data.Dataset):
         self.traj_point = []
         self.traj_point_token = []
         self.target_point = []
+        self.corner_list = []
         self.create_gt_data()
         self.gnndir = "./interm_data"
         if is_train == 1:
@@ -104,21 +107,22 @@ class ParkingDataModuleReal(torch.utils.data.Dataset):
     def __getitem__(self, index):
         g: GraphData = self.graph_dataset[index].clone()  # 这是 GraphData 实例
 
-        x = g.x.clone()
+        # x = g.x.clone()
 
-        x[:, 0] = (x[:, 0] - self.graph_norm_x_min) / (self.graph_norm_x_max - self.graph_norm_x_min)
-        x[:, 1] = (x[:, 1] - self.graph_norm_y_min) / (self.graph_norm_y_max - self.graph_norm_y_min)
-        x[:, 2] = (x[:, 2] - self.graph_norm_theta_min) / (self.graph_norm_theta_max - self.graph_norm_theta_min)
-        g.x = x
+        # x[:, 0] = (x[:, 0] - self.graph_norm_x_min) / (self.graph_norm_x_max - self.graph_norm_x_min)
+        # x[:, 1] = (x[:, 1] - self.graph_norm_y_min) / (self.graph_norm_y_max - self.graph_norm_y_min)
+        # x[:, 2] = (x[:, 2] - self.graph_norm_theta_min) / (self.graph_norm_theta_max - self.graph_norm_theta_min)
+        # g.x = x
         # 把轨迹/目标等张量挂到图上成为额外属性
-        traj = self.traj_point[index].copy()
-        traj[0::2] = (traj[0::2] - self.traj_x_min) / (self.traj_x_max - self.traj_x_min)
-        traj[1::2] = (traj[1::2] - self.traj_y_min) / (self.traj_y_max - self.traj_y_min)
-        # g.gt_traj_point        = torch.from_numpy(np.array(self.traj_point[index]))
-        g.gt_traj_point        = torch.from_numpy(traj.astype(np.float32))
+        # traj = self.traj_point[index].copy()
+        # traj[0::2] = (traj[0::2] - self.traj_x_min) / (self.traj_x_max - self.traj_x_min)
+        # traj[1::2] = (traj[1::2] - self.traj_y_min) / (self.traj_y_max - self.traj_y_min)
+        g.gt_traj_point        = torch.from_numpy(np.array(self.traj_point[index]))
+        # g.gt_traj_point        = torch.from_numpy(traj.astype(np.float32))
         g.gt_traj_point_token  = torch.from_numpy(np.array(self.traj_point_token[index]))
-        # g.target_point         = torch.from_numpy(self.target_point[index])
-        # g.fuzzy_target_point   = torch.from_numpy(self.fuzzy_target_point[index])
+        g.target_point         = torch.from_numpy(np.array(self.target_point[index]))
+        g.fuzzy_target_point   = torch.from_numpy(np.array(self.fuzzy_target_point[index]))
+        g.vehicle_corners = torch.from_numpy(np.array(self.corner_list[index]))
 
         return g  
 
@@ -156,6 +160,30 @@ class ParkingDataModuleReal(torch.utils.data.Dataset):
         }
 
         return pose_ret
+    
+    def get_agent_feature_ls(self):
+        vehicle_width = 1.8
+        vehicle_length = 3.99
+        vehicle_rear_overhang = 3.2
+        vehicle_angle = 3.14 / 2.0
+    
+        vehicle_position = Vec2d(0.0, 0.0)
+
+        vehicle_center = vehicle_position + Vec2d.create_unit_vec2d(vehicle_angle) * (vehicle_length / 2.0 - vehicle_rear_overhang)
+
+        vehicle_box = Box2d(vehicle_center, vehicle_angle, vehicle_length, vehicle_width)
+
+        vehicle_corners = vehicle_box.GetAllCorners()
+        agent_feature_points_list = []
+
+        for index in range(0,len(vehicle_corners)):
+            x_array = vehicle_corners[index].x_
+            y_array = vehicle_corners[index].y_
+            agent_feature_points_list.append([x_array,y_array])
+
+        agent_feature_points_array = np.asarray(agent_feature_points_list, dtype=np.float32).reshape(4, 2)
+
+        return agent_feature_points_array
 
     def create_gt_data(self):
         all_tasks = self.get_all_tasks()
@@ -175,12 +203,15 @@ class ParkingDataModuleReal(torch.utils.data.Dataset):
                 # create parking goal
                 fuzzy_parking_goal, parking_goal = self.create_parking_goal_gt(traje_info_obj, world2ego_mat, switch_side)
 
+                vehicle_corners = self.get_agent_feature_ls()
+
                 self.traj_point.append(predict_point_gt)
 
                 self.traj_point_token.append(predict_point_token_gt)
                 self.target_point.append(parking_goal)
                 self.fuzzy_target_point.append(fuzzy_parking_goal)
                 self.task_index_list.append(task_index)
+                self.corner_list.append(vehicle_corners)
 
         self.format_transform()
 

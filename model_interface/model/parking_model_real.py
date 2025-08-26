@@ -7,6 +7,8 @@ from model_interface.model.trajectory_decoder import TrajectoryDecoder
 from model_interface.model.subgraph import SubGraph
 from model_interface.model.selfatten import SelfAttentionLayer
 from utils.config import Configuration
+import numpy as np
+import cv2
 
 
 class ParkingModelReal(nn.Module):
@@ -19,32 +21,35 @@ class ParkingModelReal(nn.Module):
         # self.lss_bev_model = LssBevModel(self.cfg)
         # self.image_res_encoder = BevEncoder(in_channel=self.cfg.bev_encoder_in_channel)
 
-        # # Target Encoder
-        # self.target_res_encoder = BevEncoder(in_channel=1)
+        # Target Encoder
+        self.target_res_encoder = BevEncoder(in_channel=1)
 
-        # # BEV Query
-        # self.bev_query = BevQuery(self.cfg)
+        # Vehicle Encoder
+        self.vehicle_res_encoder = BevEncoder(in_channel=1)
+
+        # BEV Query
+        self.bev_query = BevQuery(self.cfg)
 
         # self.polyline_vec_shape = self.cfg.in_channels * (2 ** self.cfg.num_subgraph_layers)
-        self.subgraph = SubGraph(
-            self.cfg.in_channels, self.cfg.num_subgraph_layers, self.cfg.subgraph_width, self.cfg.max_id)
-        self.self_atten_layer = SelfAttentionLayer(
-            self.cfg.subgraph_width, self.cfg.global_graph_width)
+        # self.subgraph = SubGraph(
+        #     self.cfg.in_channels, self.cfg.num_subgraph_layers, self.cfg.subgraph_width, self.cfg.max_id)
+        # self.self_atten_layer = SelfAttentionLayer(
+        #     self.cfg.subgraph_width, self.cfg.global_graph_width)
 
         # Trajectory Decoder
         self.trajectory_decoder = self.get_trajectory_decoder()
 
     def forward(self, data):
         # Encoder
-        # bev_feature, pred_depth, bev_target = self.encoder(data, mode="train")
-        time_step_len = int(data["time_step_len"][0])
-        valid_lens = data["valid_len"]
-        sub_graph_out = self.subgraph(data)
-        x = sub_graph_out.view(-1, time_step_len, self.cfg.subgraph_width)
-        out = self.self_atten_layer(x, valid_lens)
+        bev_feature = self.encoder(data, mode="train")
+        # time_step_len = int(data["time_step_len"][0])
+        # valid_lens = data["valid_len"]
+        # sub_graph_out = self.subgraph(data)
+        # x = sub_graph_out.view(-1, time_step_len, self.cfg.subgraph_width)
+        # out = self.self_atten_layer(x, valid_lens)
 
         # Decoder
-        pred_traj_point = self.trajectory_decoder(out[:, [0]].squeeze(1), data['gt_traj_point'].to(self.cfg.device))
+        pred_traj_point = self.trajectory_decoder(bev_feature, data['gt_traj_point_token'].to(self.cfg.device))
 
         return pred_traj_point
 
@@ -78,29 +83,78 @@ class ParkingModelReal(nn.Module):
         return autoregressive_point
 
     def encoder(self, data, mode):
-        # Camera Encoder
-        images = data['image'].to(self.cfg.device, non_blocking=True)
-        intrinsics = data['intrinsics'].to(self.cfg.device, non_blocking=True)
-        extrinsics = data['extrinsics'].to(self.cfg.device, non_blocking=True)
-        bev_camera, pred_depth = self.lss_bev_model(images, intrinsics, extrinsics)
-        bev_camera_encoder = self.image_res_encoder(bev_camera, flatten=False)
+        # # Camera Encoder
+        # images = data['image'].to(self.cfg.device, non_blocking=True)
+        # intrinsics = data['intrinsics'].to(self.cfg.device, non_blocking=True)
+        # extrinsics = data['extrinsics'].to(self.cfg.device, non_blocking=True)
+        # bev_camera, pred_depth = self.lss_bev_model(images, intrinsics, extrinsics)
+        # bev_camera_encoder = self.image_res_encoder(bev_camera, flatten=False)
     
         # Target Encoder
         target_point = data['fuzzy_target_point'] if self.cfg.use_fuzzy_target else data['target_point']
         target_point = target_point.to(self.cfg.device, non_blocking=True)
-        bev_target = self.get_target_bev(target_point, mode=mode)
+        bev_target = self.get_target_bev(target_point.reshape(-1, 2), mode=mode)
         bev_target_encoder = self.target_res_encoder(bev_target, flatten=False)
+
+        box_corners = data["vehicle_corners"].reshape(-1, 4, 2)
+
+        bev_vehicle = self.get_target_box_bev(box_corners, mode)
+
+        bev_vehicle_encoder = self.vehicle_res_encoder(bev_vehicle, flatten=False)
         
         # Feature Fusion
-        bev_feature = self.get_feature_fusion(bev_target_encoder, bev_camera_encoder)
+        bev_feature = self.get_feature_fusion(bev_target_encoder, bev_vehicle_encoder)
 
         bev_feature = torch.flatten(bev_feature, 2)
 
-        return bev_feature, pred_depth, bev_target
+        return bev_feature
+    
+
+    def get_target_box_bev(self, box_corners, mode):
+        """
+        box_corners: [B, 4, 2]  车辆坐标系下的 4 个角点，单位：米
+        返回值: 同 get_target_bev，但返回的 bev_target 中 box 内部区域填 2.0
+        """
+        h = int((self.cfg.bev_y_bound[1] - self.cfg.bev_y_bound[0]) / self.cfg.bev_y_bound[2])
+        w = int((self.cfg.bev_x_bound[1] - self.cfg.bev_x_bound[0]) / self.cfg.bev_x_bound[2])
+        b = b = box_corners.size(0)
+
+    # 初始化 BEV 栅格
+        bev_target = torch.zeros((b, 1, h, w), dtype=torch.float, device=self.cfg.device)
+
+    # 坐标系转换：车辆系米 → BEV 像素
+    # 注意：x 对应 w，y 对应 h；原点平移到 BEV 中心
+        scale_x = 1.0 / self.cfg.bev_x_bound[2]
+        scale_y = 1.0 / self.cfg.bev_y_bound[2]
+        cx, cy = w / 2, h / 2
+
+    # 把 [B, 4, 2] 的角点一次性映射到像素坐标
+        corners_px = torch.empty_like(box_corners)
+        corners_px[..., 0] = box_corners[..., 0] * scale_x + cx   # x → col
+        corners_px[..., 1] = box_corners[..., 1] * scale_y + cy   # y → row
+        corners_px = corners_px.round().long()                    # 四舍五入取整
+
+    # 逐 batch 绘制填充
+        for bi in range(b):
+        # 取当前 batch 的 4 个角点
+            pts = corners_px[bi]  # [4, 2]
+        # OpenCV 接口需要 [N,1,2] 且 numpy/int32
+            pts_np = pts.cpu().numpy().astype(np.int32)[:, None, :]
+
+            mask = np.zeros((h, w), dtype=np.uint8)
+            cv2.fillPoly(mask, [pts_np], color=1)
+
+            mask_tensor = torch.from_numpy(mask.astype(np.float32)).to(bev_target.device)
+            bev_target[bi, 0] = torch.where(mask_tensor.bool(), 2.0, bev_target[bi, 0])
+
+        return bev_target
+    
+    # def get_cluster_bev(self, data):
+
 
     def get_target_bev(self, target_point, mode):
         h, w = int((self.cfg.bev_y_bound[1] - self.cfg.bev_y_bound[0]) / self.cfg.bev_y_bound[2]), int((self.cfg.bev_x_bound[1] - self.cfg.bev_x_bound[0]) / self.cfg.bev_x_bound[2])
-        b = self.cfg.batch_size if mode == "train" else 1
+        b = b = target_point.size(0)
 
         # Get target point
         bev_target = torch.zeros((b, 1, h, w), dtype=torch.float).to(self.cfg.device, non_blocking=True)
