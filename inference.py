@@ -47,12 +47,12 @@ def collate_graph(batch_list):
 
     return big_graph
 
-def inference(inference_cfg: InferenceConfiguration, test_loader):
+def inference(inference_cfg: InferenceConfiguration):
     device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
     ParkingInferenceModelModule = get_parking_model(data_mode=inference_cfg.train_meta_config.data_mode, run_mode="inference")
     parking_inference_obj = ParkingInferenceModelModule(inference_cfg)
-    # dataset_test = ParkingDataModuleReal(inference_cfg.train_meta_config, is_train=2)
-    # test_loader = DataLoader(dataset_test, batch_size= 1, shuffle=False, num_workers=0, collate_fn=collate_graph)
+    dataset_test = ParkingDataModuleReal(inference_cfg.train_meta_config, is_train=2)
+    test_loader = DataLoader(dataset_test, batch_size= 1, shuffle=False, num_workers=0, collate_fn=collate_graph)
     count = 0
     for data in tqdm(test_loader):
         data.to(device)

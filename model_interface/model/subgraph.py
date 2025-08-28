@@ -40,7 +40,7 @@ class SubGraph(nn.Module):
     Subgraph that computes all vectors in a polyline, and get a polyline-level feature
     """
 
-    def __init__(self, in_channels, num_subgraph_layres=9, hidden_unit=256, max_id = 64, dropout=0.0001, use_residual=True, use_norm=True):
+    def __init__(self, in_channels, num_subgraph_layres=9, hidden_unit=256, max_id = 64, dropout=0.001, use_residual=True, use_norm=True):
         super(SubGraph, self).__init__()
         self.convs = nn.ModuleList()
         self.norms = nn.ModuleList() if use_norm else None
@@ -51,7 +51,7 @@ class SubGraph(nn.Module):
 
         self.id_emb = nn.Embedding(max_id + 1, id_dim)
 
-        self.feature_encoder = ResBottleneck(in_channels, hidden_unit, dropout=0.0002)
+        self.feature_encoder = ResBottleneck(in_channels, hidden_unit, dropout=0.001)
         
         # 输入层
         self.convs.append(GCNConv(hidden_unit, hidden_unit))
@@ -111,12 +111,13 @@ class SubGraph(nn.Module):
                 x = x + original_x
 
         data.x = x
-        out_data = avg_pool_x(data.cluster, data.x, data.batch)
+        # out_data = avg_pool_x(data.cluster, data.x, data.batch)
+        out_data = max_pool(data.cluster, data)
         # try:
         # assert out_data[0].shape[0] % int(data["time_step_len"][0]) == 0
         # except:
             # from pdb import set_trace; set_trace()
-        norm_x = F.normalize(out_data[0], p=2, dim=0, eps=1e-6)
+        norm_x = F.normalize(out_data.x, p=2, dim=0, eps=1e-6)
         return norm_x
         # node_feature, _ = torch.max(x, dim=0)
         # # l2 noramlize node_feature before feed it to global graph

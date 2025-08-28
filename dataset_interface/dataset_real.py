@@ -53,6 +53,19 @@ class ParkingDataModuleReal(torch.utils.data.Dataset):
             config.traj_norm_x_min, config.traj_norm_x_max = self.traj_x_min, self.traj_x_max
             config.traj_norm_y_min, config.traj_norm_y_max = self.traj_y_min, self.traj_y_max
 
+            all_target_point_x = self.target_point[:,0]
+            all_target_point_y = self.target_point[:,1]
+            all_target_point_theta = self.target_point[:,2]
+            self.target_point_x_min, self.target_point_x_max = all_target_point_x.min(), all_target_point_x.max()
+            self.target_point_y_min, self.target_point_y_max = all_target_point_y.min(), all_target_point_y.max()
+            self.target_point_theta_min, self.target_point_theta_max = all_target_point_theta.min(), all_target_point_theta.max()
+
+            config.target_point_x_min, config.target_point_x_max = self.target_point_x_min, self.target_point_x_max
+            config.target_point_y_min, config.target_point_y_max = self.target_point_y_min, self.target_point_y_max
+            config.target_point_theta_min, config.target_point_theta_max = self.target_point_theta_min, self.target_point_theta_max
+
+
+
 
             all_nodes = []
             for g in self.graph_dataset:
@@ -85,6 +98,13 @@ class ParkingDataModuleReal(torch.utils.data.Dataset):
             cfg_dict["graph_norm_y_max"] = float(config.graph_norm_y_max)
             cfg_dict["graph_norm_theta_min"] = float(config.graph_norm_theta_min)
             cfg_dict["graph_norm_theta_max"] = float(config.graph_norm_theta_max)
+            cfg_dict["target_point_x_min"] = float(config.target_point_x_min)
+            cfg_dict["target_point_x_max"] = float(config.target_point_x_max)
+            cfg_dict["target_point_y_min"] = float(config.target_point_y_min)
+            cfg_dict["target_point_y_max"] = float(config.target_point_y_max)
+            cfg_dict["target_point_theta_min"] = float(config.target_point_theta_min)
+            cfg_dict["target_point_theta_max"] = float(config.target_point_theta_max)
+
             with open("./config/training_real.yaml", "w", encoding="utf-8") as f:
                 yaml.dump(cfg_dict, f)   
 
@@ -96,6 +116,11 @@ class ParkingDataModuleReal(torch.utils.data.Dataset):
             self.graph_norm_y_min, self.graph_norm_y_max = config.graph_norm_y_min, config.graph_norm_y_max
             self.graph_norm_theta_min, self.graph_norm_theta_max = config.graph_norm_theta_min, config.graph_norm_theta_max   
 
+
+
+            self.target_point_x_min, self.target_point_x_max = config.target_point_x_min, config.target_point_x_max
+            self.target_point_y_min, self.target_point_y_max = config.target_point_y_min, config.target_point_y_max
+            self.target_point_theta_min, self.target_point_theta_max = config.target_point_theta_min, config.target_point_theta_max
 
 
     def __len__(self):
@@ -114,10 +139,15 @@ class ParkingDataModuleReal(torch.utils.data.Dataset):
         traj = self.traj_point[index].copy()
         traj[0::2] = (traj[0::2] - self.traj_x_min) / (self.traj_x_max - self.traj_x_min)
         traj[1::2] = (traj[1::2] - self.traj_y_min) / (self.traj_y_max - self.traj_y_min)
+        
+        target_point = self.target_point[index].copy()
+        target_point[0] = (target_point[0] - self.target_point_x_min) / (self.target_point_x_max - self.target_point_x_min)
+        target_point[1] = (target_point[1] - self.target_point_y_min) / (self.target_point_y_max - self.target_point_y_min)
+        target_point[2] = (target_point[2] - self.target_point_theta_min) / (self.target_point_theta_max - self.target_point_theta_min)
         # g.gt_traj_point        = torch.from_numpy(np.array(self.traj_point[index]))
         g.gt_traj_point        = torch.from_numpy(traj.astype(np.float32))
         g.gt_traj_point_token  = torch.from_numpy(np.array(self.traj_point_token[index]))
-        # g.target_point         = torch.from_numpy(self.target_point[index])
+        g.target_point         = torch.from_numpy(target_point.astype(np.float32))
         # g.fuzzy_target_point   = torch.from_numpy(self.fuzzy_target_point[index])
 
         return g  
@@ -221,6 +251,14 @@ class ParkingDataModuleReal(torch.utils.data.Dataset):
         assert append_pad_num >= 0
         predict_point_token_gt = predict_point_token_gt + append_pad_num * [self.PAD_token]
         return predict_point_token_gt, predict_point_gt
+    
+    def get_safe_yaw(slef, yaw):
+        if yaw <= -180:
+            yaw += 360
+        if yaw > 180:
+            yaw -= 360
+        yaw = yaw / 180.0 * 3.14
+        return yaw
 
     def create_parking_goal_gt(self, traje_info_obj: TrajectoryInfoParser, world2ego_mat: np.array, switch_side: float):
         candidate_target_pose_in_world = traje_info_obj.get_random_candidate_target_pose()
@@ -231,7 +269,8 @@ class ParkingDataModuleReal(torch.utils.data.Dataset):
         target_pose_in_world = traje_info_obj.get_precise_target_pose()
         target_pose_in_ego = target_pose_in_world.get_pose_in_ego(world2ego_mat)
         target_pose_in_ego.y = target_pose_in_ego.y * switch_side
-        parking_goal = [target_pose_in_ego.x, target_pose_in_ego.y]
+        yaw_refine = self.get_safe_yaw(target_pose_in_ego.yaw) * switch_side
+        parking_goal = [target_pose_in_ego.x, target_pose_in_ego.y, yaw_refine]
 
         return fuzzy_parking_goal, parking_goal
     def get_all_tasks(self):

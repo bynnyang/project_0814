@@ -27,7 +27,7 @@ from inference import test_main
 decay_lr_factor = 0.3
 decay_lr_every = 10
 lr = 0.0001
-epochs = 200
+epochs = 150
 end_epoch = 0
 lr = 0.0001
 show_every = 20
@@ -81,7 +81,7 @@ def collate_graph(batch_list):
     # 其余字段用默认 collate 拼出 [B, ...]
     # tensor_keys = ['gt_traj_point', 'gt_traj_point_token',
     #                'target_point', 'fuzzy_target_point']
-    tensor_keys = ['gt_traj_point', 'gt_traj_point_token']
+    tensor_keys = ['gt_traj_point', 'gt_traj_point_token', 'target_point']
     tensor_dict = default_collate([{k: getattr(g, k) for k in tensor_keys}
                                    for g in batch_list])
 
@@ -152,7 +152,7 @@ def train(config_obj):
             #         data[key] = val.to(device)
             data.to(device)
             optimizer.zero_grad()
-            out = model(data)
+            out = model(data, global_step)
             loss = traj_point_loss_func(out, data, global_step)
             loss.backward()
             acc_loss += config_obj.batch_size * loss.item()
@@ -170,7 +170,7 @@ def train(config_obj):
             curr_minade = metrics
             print(f"minADE:{metrics:3f}")
 
-            if curr_minade < best_minade:
+            if curr_minade < (best_minade + 0.2):
                 best_minade = curr_minade
                 save_checkpoint(save_dir, model, optimizer, epoch, best_minade, date_record)
         model.train()

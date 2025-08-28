@@ -25,7 +25,7 @@ def get_eval_metric_results(config_obj, model, data_loader, device, global_step)
             for key, val in data.items():
                 if isinstance(val, torch.Tensor):
                     data[key] = val.to(device)
-            out = model(data)
+            out = model(data, global_step)
             loss+=traj_point_loss_func(out, data, global_step)
         loss = loss / len(data_loader)
         return loss

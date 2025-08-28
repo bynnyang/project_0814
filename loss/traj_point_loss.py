@@ -32,7 +32,7 @@ class TrajPointLoss(nn.Module):
         self.cfg = cfg
         self.mse_loss = nn.MSELoss()
 
-    def forward(self, pred, data):
+    def forward(self, pred, data, global_step):
         gt = data['gt_traj_point'].view(-1, self.cfg.autoregressive_points, 2)
         traj_point_loss = self.mse_loss(pred, gt)
         return traj_point_loss

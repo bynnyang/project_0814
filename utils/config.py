@@ -90,6 +90,13 @@ class Configuration:
     traj_norm_y_min: float = None
     traj_norm_y_max: float = None
 
+    target_point_x_min: float = None
+    target_point_x_max: float = None
+    target_point_y_min: float = None
+    target_point_y_max: float = None
+    target_point_theta_min: float = None
+    target_point_theta_max: float = None
+
     max_id: int = None
 
 
