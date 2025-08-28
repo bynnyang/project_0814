@@ -51,8 +51,8 @@ class ParkingInferenceModuleReal:
         delta_predicts = np.array(delta_predicts, dtype=np.float32)
         # delta_predicts[:,0::2] = delta_predicts[:,0::2] * (self.cfg.train_meta_config.traj_norm_x_max - self.cfg.train_meta_config.traj_norm_x_min) + self.cfg.train_meta_config.traj_norm_x_min
         # delta_predicts[:,1::2] = delta_predicts[:,1::2] * (self.cfg.train_meta_config.traj_norm_y_max - self.cfg.train_meta_config.traj_norm_y_min) + self.cfg.train_meta_config.traj_norm_y_min 
-        delta_predicts = fitting_curve(delta_predicts, num_points=self.cfg.train_meta_config.autoregressive_points, item_number=self.cfg.train_meta_config.item_number)
-        traj_yaw_path = calculate_tangent(np.array(delta_predicts)[:, :2], mode="five_point")
+        # delta_predicts = fitting_curve(delta_predicts, num_points=self.cfg.train_meta_config.autoregressive_points, item_number=self.cfg.train_meta_config.item_number)
+        # traj_yaw_path = calculate_tangent(np.array(delta_predicts)[:, :2], mode="five_point")
 
         x_coords = []
         y_coords = []
