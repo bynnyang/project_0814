@@ -5,5 +5,13 @@ __pycache__
 */*/__pycache__/
 data/
 trained_params/
-e2e_dataset/
-interm_data/
+e2e_dataset/test/*
+e2e_dataset/train/*
+interm_data/test_intermediate/*
+interm_data/train_intermediate/*
+!e2e_dataset/train/e2e_dataset.pt
+!e2e_dataset/test/e2e_dataset.pt
+!interm_data/train_intermediate/processed
+!interm_data/test_intermediate/processed
+!interm_data/train_intermediate/raw
+!interm_data/test_intermediate/raw
