@@ -34,7 +34,7 @@ show_every = 20
 val_every = 5
 best_minade = float('inf')
 save_dir = './trained_params'
-date_record = "250825"
+date_record = "250902"
 global_step = 0
 
 class MinStepLR(optim.lr_scheduler.StepLR):
