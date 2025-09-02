@@ -31,19 +31,28 @@ class ParkingDataModuleReal(torch.utils.data.Dataset):
         self.traj_point = []
         self.traj_point_token = []
         self.target_point = []
-        self.create_gt_data()
+       
         self.gnndir = "./interm_data"
         if is_train == 1:
             self.folder = "train"
+            self.e2e_dataset = os.path.join("./e2e_dataset", "train", "e2e_dataset.pt")
         elif is_train == 0:
             self.folder = "val"
+            self.e2e_dataset = os.path.join("./e2e_dataset", "val", "e2e_dataset.pt")
         else:
             self.folder = "test"
+            self.e2e_dataset = os.path.join("./e2e_dataset", "test", "e2e_dataset.pt")
         self.dataptpath = os.path.join(self.gnndir, f"{self.folder}_intermediate")
 
-        # self.graph_dataset = torch.load(self.dataptpath, weights_only=False)
+        if os.path.exists(self.e2e_dataset):
+            # Load the dataset.pt file
+            self.load_dataset()
+        else:
+            # Run create_gt_data to generate the data and save it
+            self.create_gt_data()
+            self.save_dataset()
+
         self.graph_dataset = GraphDataset(self.dataptpath)
-        # self.peace = self.graph_dataset[0][1]['x']
         if is_train == 1:
             all_x = self.traj_point[:, 0::2]          # 已 flatten，每样本 (30*2,)
             all_y = self.traj_point[:, 1::2]
@@ -63,8 +72,6 @@ class ParkingDataModuleReal(torch.utils.data.Dataset):
             config.target_point_x_min, config.target_point_x_max = self.target_point_x_min, self.target_point_x_max
             config.target_point_y_min, config.target_point_y_max = self.target_point_y_min, self.target_point_y_max
             config.target_point_theta_min, config.target_point_theta_max = self.target_point_theta_min, self.target_point_theta_max
-
-
 
 
             all_nodes = []
@@ -122,6 +129,26 @@ class ParkingDataModuleReal(torch.utils.data.Dataset):
             self.target_point_y_min, self.target_point_y_max = config.target_point_y_min, config.target_point_y_max
             self.target_point_theta_min, self.target_point_theta_max = config.target_point_theta_min, config.target_point_theta_max
 
+
+    def load_dataset(self):
+        # Load the dataset.pt file
+        data = torch.load(self.e2e_dataset, weights_only=False)
+        self.task_index_list = data['task_index_list']
+        self.fuzzy_target_point = data['fuzzy_target_point']
+        self.traj_point = data['traj_point']
+        self.traj_point_token = data['traj_point_token']
+        self.target_point = data['target_point']
+
+    def save_dataset(self):
+        # Save the dataset to dataset.pt file
+        data = {
+            'task_index_list': self.task_index_list,
+            'fuzzy_target_point': self.fuzzy_target_point,
+            'traj_point': self.traj_point,
+            'traj_point_token': self.traj_point_token,
+            'target_point': self.target_point
+        }
+        torch.save(data, self.e2e_dataset)
 
     def __len__(self):
         return len(self.traj_point)
@@ -236,9 +263,9 @@ class ParkingDataModuleReal(torch.utils.data.Dataset):
                 break
 
         predict_point_gt = [item for sublist in predict_point for item in sublist]
-        # for index, point in enumerate(predict_point):
-        #     point_record = self.parser_measurements_pred(point, switch_side)
-        #     self.save_measurements(point_record, ego_index, filename,index,"pred")
+        for index, point in enumerate(predict_point):
+            point_record = self.parser_measurements_pred(point, switch_side)
+            self.save_measurements(point_record, ego_index, filename,index,"pred")
         append_pad_num = self.cfg.autoregressive_points * self.cfg.item_number - len(predict_point_gt)
         assert append_pad_num >= 0
         predict_point_gt = predict_point_gt + (append_pad_num // 2) * [predict_point_gt[-2], predict_point_gt[-1]]

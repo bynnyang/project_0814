@@ -13,7 +13,7 @@ folder_path = "e2e_dataset/test/"
 for filename in tqdm(sorted(os.listdir(folder_path))):
     cnt = 0
     path_sring = os.path.join(folder_path, filename)
-    if filename == "20250623T153621":
+    if filename == "20250623T153621" or filename == "20250406T191929" or filename == "20250403T103923":
         continue
     for item in tqdm(os.listdir(path_sring)):
         file_path = os.path.join(path_sring, str(cnt))

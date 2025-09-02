@@ -54,30 +54,30 @@ query_en_bev_length: 256
 
 ##################### Decoder #####################
 decoder_method: "transformer"
-tf_de_dim: 64
+tf_de_dim: 128
 tf_de_heads: 4
-tf_de_layers: 2
-tf_de_dropout: 0.005
+tf_de_layers: 4
+tf_de_dropout: 0.05
 
 
 in_channels: 11
 num_subgraph_layers: 3
 subgraph_width: 64
-global_graph_width: 64
-max_id: 49
-traj_norm_x_min: -2.891070604324341
-traj_norm_x_max: 2.8998889923095703
+global_graph_width: 128
+max_id: 50
+traj_norm_x_min: -2.898744583129883
+traj_norm_x_max: 2.899961471557617
 traj_norm_y_min: -0.9972971677780151
-traj_norm_y_max: 0.49937281012535095
+traj_norm_y_max: 0.5519722104072571
 graph_norm_x_min: -15.825324058532715
 graph_norm_x_max: 16.95151710510254
-graph_norm_y_min: -14.398101806640625
-graph_norm_y_max: 15.159072875976562
+graph_norm_y_min: -14.40243911743164
+graph_norm_y_max: 15.261693954467773
 graph_norm_theta_min: -3.1399965286254883
-graph_norm_theta_max: 3.139981746673584
-target_point_x_min: -5.658017635345459
+graph_norm_theta_max: 3.1399965286254883
+target_point_x_min: -7.874159336090088
 target_point_x_max: 3.3416473865509033
-target_point_y_min: -6.828744411468506
-target_point_y_max: 0.012594797648489475
-target_point_theta_min: -0.02635204792022705
+target_point_y_min: -7.363075256347656
+target_point_y_max: 0.05854923278093338
+target_point_theta_min: -0.07990014553070068
 target_point_theta_max: 1.6548668146133423

@@ -87,7 +87,7 @@ class TrajectoryInfoParser:
     def get_progress(self, index) -> float:
         return self.progress_list[index]
 
-    def _get_trajectory_direction(self, bias_threshold=30) -> str:
+    def _get_trajectory_direction(self, bias_threshold=60) -> str:
         direction = None
         delta_yaw = self.get_safe_yaw(self.trajectory_list[-1].yaw - self.trajectory_list[0].yaw)
         if 90 - bias_threshold < abs(delta_yaw) < 90 + bias_threshold:

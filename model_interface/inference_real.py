@@ -3,7 +3,6 @@ import numpy as np
 import threading
 import time
 
-import rospy
 import torch
 import torchvision
 from geometry_msgs.msg import Point, Pose, PoseStamped, Quaternion

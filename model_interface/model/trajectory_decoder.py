@@ -88,7 +88,7 @@ class TrajectoryDecoder(nn.Module):
             tgt_embedding = self.pos_drop(tgt_embedding + self.pos_embed[:, :t, :])
             
             # 解码
-            pred_traj_points = self.decoder(encoder_out[:,[0]], tgt_embedding, tgt_mask, tgt_padding_mask)
+            pred_traj_points = self.decoder(encoder_out, tgt_embedding, tgt_mask, tgt_padding_mask)
             
             # 获取最后一步的预测
             last_step_pred = pred_traj_points[:, -1, :]
@@ -116,7 +116,7 @@ class TrajectoryDecoder(nn.Module):
         tgt_embedding = tgt_embedding + final_global_context
         tgt_embedding = self.pos_drop(tgt_embedding + self.pos_embed[:, :seq_len, :])
 
-        pred_traj_points = self.decoder(encoder_out[:,[0]], tgt_embedding, tgt_mask, tgt_padding_mask)
+        pred_traj_points = self.decoder(encoder_out, tgt_embedding, tgt_mask, tgt_padding_mask)
         pred_traj_points = self.output(pred_traj_points)
         pred_traj_points = self.out_drop(pred_traj_points)
         return pred_traj_points
@@ -139,7 +139,7 @@ class TrajectoryDecoder(nn.Module):
         tgt_embedding = tgt_embedding + final_global_context
         tgt_embedding = tgt_embedding + self.pos_embed[:, :tgt.size(1), :]
 
-        pred_traj_points = self.decoder(encoder_out[:,[0]], tgt_embedding, tgt_mask, tgt_padding_mask)
+        pred_traj_points = self.decoder(encoder_out, tgt_embedding, tgt_mask, tgt_padding_mask)
         pred_traj_points = self.output(pred_traj_points)[:, length - offset, :]
 
         pred_traj_points = torch.softmax(pred_traj_points, dim=-1)
