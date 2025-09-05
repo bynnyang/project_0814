@@ -60,13 +60,16 @@ class ParkingInferenceModuleReal:
         y_coords = []
         for point_item in delta_predicts:
             if self.cfg.train_meta_config.item_number == 2:
-                x, y = point_item
+                x, y= point_item
                 x_coords.append(x)
                 y_coords.append(y)
             elif self.cfg.train_meta_config.item_number == 3:
-                x, y, progress_bar = point_item
-                if abs(progress_bar) < 1 - self.cfg.progress_threshold:
-                    break
+                # x, y, progress_bar = point_item
+                # if abs(progress_bar) < 1 - self.cfg.progress_threshold:
+                #     break
+                x, y= point_item
+                x_coords.append(x)
+                y_coords.append(y)
         save_folder = os.path.join(filename,str(cnt),"test")
         os.makedirs(save_folder, exist_ok=True)
         save_path = os.path.join(save_folder, "test")

@@ -11,7 +11,7 @@ from utils.pose_utils import CustomizePose
 
 
 
-def tokenize_traj_point(x, y, progress, token_nums, xy_max, progress_bar=1):
+def tokenize_traj_point(x, y, theta, token_nums, xy_max, progress_bar=1):
     """
     Tokenize trajectory points
     :param x: [-xy_max, xy_max]
@@ -22,11 +22,11 @@ def tokenize_traj_point(x, y, progress, token_nums, xy_max, progress_bar=1):
     valid_token = token_nums - 1
     x_normalize = (x + xy_max) / (2 * xy_max)
     y_normalize = (y + xy_max) / (2 * xy_max)
-    progress_normalize = (progress + progress_bar) / (2 * progress_bar)
+    theta_normalize = (theta + 180.0) / (2 * 180.0)
    
-    if x_normalize > 1 or y_normalize > 1 or progress_normalize > 1 or x_normalize < 0 or y_normalize < 0 or progress_normalize < 0:
-        raise ValueError("x_normalize: {}, y_normalize: {}, progress_normalize: {}".format(x_normalize, y_normalize, progress_normalize))
-    return [int(x_normalize * valid_token), int(y_normalize * valid_token), int(progress_normalize * valid_token)]
+    if x_normalize > 1 or y_normalize > 1 or theta_normalize > 1 or x_normalize < 0 or y_normalize < 0 or theta_normalize < 0:
+        raise ValueError("x_normalize: {}, y_normalize: {}, theta_normalize: {}".format(x_normalize, y_normalize, theta_normalize))
+    return [int(x_normalize * valid_token), int(y_normalize * valid_token), int(theta_normalize * valid_token)]
 
 
 def detokenize_traj_point(torch_list: torch.tensor, token_nums, item_num, xy_max=10, progress_max=1):
@@ -36,7 +36,7 @@ def detokenize_traj_point(torch_list: torch.tensor, token_nums, item_num, xy_max
     ret_tensor = torch.zeros_like(torch_list_process, dtype=torch.float32)
     ret_tensor[:, :2] = (torch_list_process[:, :2] / valid_token) * 2 * xy_max - xy_max
     if (item_num > 2):
-        ret_tensor[:, 2:] = (torch_list_process[:, 2:] / valid_token) * 2 * progress_max - progress_max
+        ret_tensor[:, 2:] = (torch_list_process[:, 2:] / valid_token) * 2 * 180 - 180
     return ret_tensor
 
 
