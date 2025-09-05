@@ -34,6 +34,9 @@ class ParkingInferenceModuleReal:
     def predict(self, test_data, cnt, mode="service"):
         if mode == "topic":
             self.pub_path(test_data, cnt)
+        elif mode == "simulation":
+            delta_predicts, traj_yaw_path = self.pub_simulation(test_data)
+            return delta_predicts, traj_yaw_path
         else:
             assert print("Can't support %s mode!".format(mode))
 
@@ -79,8 +82,19 @@ class ParkingInferenceModuleReal:
         plt.savefig(save_path)
         plt.close()    
 
-        
-        
+    def pub_simulation(self, test_data):
+ 
+       
+        start_token = [self.BOS_token]
+        test_data["gt_traj_point_token"] = torch.tensor([start_token], dtype=torch.int64).to(self.device)
+        test_data["gt_traj_point_token"] = test_data["gt_traj_point_token"][:,0:1]
+
+        self.model.eval()
+        delta_predicts = self.inference(test_data)
+        delta_predicts = np.array(delta_predicts, dtype=np.float32)
+        # delta_predicts = fitting_curve(delta_predicts, num_points=self.cfg.train_meta_config.autoregressive_points, item_number=self.cfg.train_meta_config.item_number)
+        traj_yaw_path = calculate_tangent(np.array(delta_predicts)[:, :2], mode="five_point")
+        return delta_predicts, traj_yaw_path
 
     def inference(self, data):
         delta_predicts = []

@@ -102,6 +102,7 @@ class HomogeneousTrans(PoseFlow):
     def get_inverse_matrix(self):
         return self.inverse()
     
+    
 
 class CustomizePose:
     def __init__(self, x, y, z, roll, yaw, pitch, s = 0.0):
@@ -121,6 +122,28 @@ class CustomizePose:
         yaw, pitch, roll = pose_flow.get_euler()
         position_list = homogeneous_matrix[:3, -1].tolist()
         x, y, z = position_list[0], position_list[1], position_list[2]
+        return CustomizePose(x=x, y=y, z=z, roll=roll, yaw=yaw, pitch=pitch)
+    
+
+    def get_pose_in_world(self, ego2world_mat: np.ndarray):
+        """
+        将当前点（在自车坐标系下）通过 ego2world_mat 变换回世界坐标系。
+        参数:
+            ego2world_mat: 4×4 齐次矩阵，自车 → 世界
+        返回:
+            CustomizePose 实例，坐标已转到世界系
+        """
+        # 当前点在自车系下的齐次矩阵
+        pose_in_ego_mat = self.get_homogeneous_transformation().get_matrix()
+        # 左乘 ego2world 得到世界系下齐次矩阵
+        homogeneous_matrix = ego2world_mat @ pose_in_ego_mat
+        # 分解出姿态与位置
+        att_input = homogeneous_matrix[:3, :3]
+        pose_flow = PoseFlow(att_input=att_input, type="rot_mat", deg_or_rad="deg")
+        yaw, pitch, roll = pose_flow.get_euler()
+        position_list = homogeneous_matrix[:3, -1].tolist()
+        x, y, z = position_list[0], position_list[1], position_list[2]
+
         return CustomizePose(x=x, y=y, z=z, roll=roll, yaw=yaw, pitch=pitch)
 
 

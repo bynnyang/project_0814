@@ -15,3 +15,9 @@ interm_data/train_intermediate/*
 !interm_data/test_intermediate/processed
 !interm_data/train_intermediate/raw
 !interm_data/test_intermediate/raw
+function/
+log/
+niodds_py3/
+dataset_interface/__pycache__/*
+ __pycache__/*
+ utils/__pycache__/*
