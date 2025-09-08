@@ -146,6 +146,8 @@ def train(config_obj):
         acc_loss = .0
         num_samples = 0
         start_tic = time.time()
+        correct = 0
+        total   = 0
         for data in train_loader:
             # for key, val in data.items():
             #     if isinstance(val, torch.Tensor):
@@ -158,12 +160,21 @@ def train(config_obj):
             acc_loss += config_obj.batch_size * loss.item()
             num_samples += data["gt_traj_point_token"].shape[0]
             optimizer.step()
+            pred = out[:, :-1,:]
+            pred_traj_point = pred.reshape(-1, pred.shape[-1])
+            gt_traj_point_token = data['gt_traj_point_token'][:, 1:-1].reshape(-1).to(device)
+            pred_token = pred_traj_point.argmax(dim=-1)
+            correct += (pred_token == gt_traj_point_token).sum().item()
+            total   += gt_traj_point_token.size(0)
+
             global_step += 1
             if (global_step + 1) % show_every == 0:
                 print( f"loss at epoch {epoch} step {global_step}:{loss.item():3f}, lr:{optimizer.state_dict()['param_groups'][0]['lr']: .6f}, time:{time.time() - start_tic: 4f}sec")
         scheduler.step()
+        train_acc = correct / total
         print(
             f"loss at epoch {epoch}:{acc_loss / num_samples:.3f}, lr:{optimizer.state_dict()['param_groups'][0]['lr']: .6f}, time:{time.time() - start_tic: 4f}sec")
+        print(f'train at epoch {epoch} | train acc: {train_acc:.4f}')   
         if (epoch+1) % val_every == 0 and (not epoch < end_epoch):
             print("eval as epoch:{epoch}")
             metrics = get_eval_metric_results(config_obj, model, val_loader, device, 19)
