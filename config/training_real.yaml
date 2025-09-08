@@ -15,7 +15,7 @@ check_val_every_n_epoch: 5
 epochs: 40
 learning_rate: 0.0001
 weight_decay: 0.00001
-batch_size: 32
+batch_size: 256
 num_workers: 8
 # resume_path: ""
 
@@ -23,7 +23,7 @@ num_workers: 8
 autoregressive_points: 30
 traj_downsample_stride: 3
 item_number: 3
-token_nums: 600
+token_nums: 300
 append_token: 3
 xy_max: 3
 process_dim: [256, 256]
