@@ -160,13 +160,18 @@ def train(config_obj):
             acc_loss += config_obj.batch_size * loss.item()
             num_samples += data["gt_traj_point_token"].shape[0]
             optimizer.step()
-            pred = out[:, :-1,:]
-            pred_traj_point = pred.reshape(-1, pred.shape[-1])
-            gt_traj_point_token = data['gt_traj_point_token'][:, 1:-1].reshape(-1).to(device)
-            pred_token = pred_traj_point.argmax(dim=-1)
-            correct += (pred_token == gt_traj_point_token).sum().item()
-            total   += gt_traj_point_token.size(0)
-
+            model.eval()
+            with torch.no_grad():
+                padding_idx = 302
+                pre_out = model(data, global_step)
+                pred = pre_out[:, :-1,:]
+                pred_traj_point = pred.reshape(-1, pred.shape[-1])
+                gt_traj_point_token = data['gt_traj_point_token'][:, 1:-1].reshape(-1).to(device)
+                pred_token = pred_traj_point.argmax(dim=-1)
+                mask = gt_traj_point_token != padding_idx
+                correct += (pred_token[mask] == gt_traj_point_token[mask]).sum().item()
+                total   += mask.sum().item()
+            model.train()
             global_step += 1
             if (global_step + 1) % show_every == 0:
                 print( f"loss at epoch {epoch} step {global_step}:{loss.item():3f}, lr:{optimizer.state_dict()['param_groups'][0]['lr']: .6f}, time:{time.time() - start_tic: 4f}sec")

@@ -54,8 +54,12 @@ class ParkingDataModuleReal(torch.utils.data.Dataset):
 
         self.graph_dataset = GraphDataset(self.dataptpath)
         if is_train == 1:
-            all_x = self.traj_point[:, 0::3]          # 已 flatten，每样本 (30*2,)
-            all_y = self.traj_point[:, 1::3]
+            if self.cfg.item_number == 2:
+                all_x = self.traj_point[:, 0::2]          # 已 flatten，每样本 (30*2,)
+                all_y = self.traj_point[:, 1::2]
+            else:
+                all_x = self.traj_point[:, 0::3]          # 已 flatten，每样本 (30*2,)
+                all_y = self.traj_point[:, 1::3]
             self.traj_x_min, self.traj_x_max = all_x.min(), all_x.max()
             self.traj_y_min, self.traj_y_max = all_y.min(), all_y.max()
             # 可选：把统计量写进 config，让验证/测试集直接复用
@@ -254,10 +258,13 @@ class ParkingDataModuleReal(torch.utils.data.Dataset):
             predict_pose_in_ego.y = predict_pose_in_ego.y * switch_side
             predict_pose_in_ego.yaw = predict_pose_in_ego.yaw * switch_side
             progress = traje_info_obj.get_progress(predict_stride_index)
-            predict_point.append([predict_pose_in_ego.x, predict_pose_in_ego.y, predict_pose_in_ego.yaw])
+            if self.cfg.item_number == 2:
+                predict_point.append([predict_pose_in_ego.x, predict_pose_in_ego.y])
+            else:
+                predict_point.append([predict_pose_in_ego.x, predict_pose_in_ego.y, predict_pose_in_ego.yaw])
             tokenize_ret = tokenize_traj_point(predict_pose_in_ego.x, predict_pose_in_ego.y, 
                                                 predict_pose_in_ego.yaw, self.cfg.token_nums, self.cfg.xy_max)
-            tokenize_ret_process = tokenize_ret if self.cfg.item_number == 2 else tokenize_ret
+            tokenize_ret_process = tokenize_ret[:2] if self.cfg.item_number == 2 else tokenize_ret
             predict_point_token.append(tokenize_ret_process)
 
             if predict_pose_in_world.s == traje_info_obj.get_trajectory_point(traje_info_obj.total_frames - 1).s or predict_index == self.cfg.autoregressive_points - 1:
@@ -269,8 +276,10 @@ class ParkingDataModuleReal(torch.utils.data.Dataset):
             self.save_measurements(point_record, ego_index, filename,index,"pred")
         append_pad_num = self.cfg.autoregressive_points * self.cfg.item_number - len(predict_point_gt)
         assert append_pad_num >= 0
-        predict_point_gt = predict_point_gt + (append_pad_num // 3) * [predict_point_gt[-3], predict_point_gt[-2], predict_point_gt[-1]]
-
+        if self.cfg.item_number == 2:
+            predict_point_gt = predict_point_gt + (append_pad_num // 2) * [predict_point_gt[-2], predict_point_gt[-1]]
+        else:
+            predict_point_gt = predict_point_gt + (append_pad_num // 3) * [predict_point_gt[-3], predict_point_gt[-2], predict_point_gt[-1]]
         predict_point_token_gt = [item for sublist in predict_point_token for item in sublist]
         predict_point_token_gt.insert(0, self.BOS_token)
         predict_point_token_gt.append(self.EOS_token)

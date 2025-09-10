@@ -425,7 +425,7 @@ def inference(inference_cfg: InferenceConfiguration, parking_inference_model:Par
     g.x = x
     # 把轨迹/目标等张量挂到图上成为额外属性
 
-    target_point = park_slot_feature[0]
+    target_point = park_slot_feature[0].copy()
     target_point[0] = (target_point[0] - inference_cfg.train_meta_config.target_point_x_min) / (inference_cfg.train_meta_config.target_point_x_max - inference_cfg.train_meta_config.target_point_x_min)
     target_point[1] = (target_point[1] - inference_cfg.train_meta_config.target_point_y_min) / (inference_cfg.train_meta_config.target_point_y_max - inference_cfg.train_meta_config.target_point_y_min)
     target_point[2] = (target_point[2] - inference_cfg.train_meta_config.target_point_theta_min) / (inference_cfg.train_meta_config.target_point_theta_max - inference_cfg.train_meta_config.target_point_theta_min)
@@ -436,13 +436,13 @@ def inference(inference_cfg: InferenceConfiguration, parking_inference_model:Par
     g.target_point = torch.from_numpy(np.array(target_point).astype(np.float32))
     g.to(device)
     t1 = time.time()
-    delta_predicts, traj_yaw_path = parking_inference_model.predict(g, 0, "simulation")
+    delta_predicts = parking_inference_model.predict(g, 0, "simulation")
     t2 = time.time()
     print(t2 - t1)
     delta_predicts_map = []
     traj_yaw_path_map = []
     for index in range(len(delta_predicts)):
-        vcs_point = CustomizePose(x=delta_predicts[index][0], y=delta_predicts[index][1], z=0.0, roll=0.0, yaw=traj_yaw_path[index], pitch=0.0)
+        vcs_point = CustomizePose(x=delta_predicts[index][0], y=delta_predicts[index][1], z=0.0, roll=0.0, yaw=delta_predicts[index][2], pitch=0.0)
         map_point = vcs_point.get_pose_in_world(judge_ego2world_mat)
         delta_predicts_map.append([map_point.x, map_point.y])
         traj_yaw_path_map.append(map_point.yaw / 180 * 3.14)

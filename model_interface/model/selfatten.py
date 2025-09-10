@@ -78,7 +78,7 @@ class SelfAttentionLayer(nn.Module):
         x = self.lin(x)
         mask = torch.arange(x.size(1), device=x.device)[None, :] > valid_len[:, None]
         out, _ = self.mha(x, x, x, key_padding_mask=mask)
-        return self.norm(out + x)   # 残差 + LayerNorm
+        return out + x   # 残差 + LayerNorm
     
 
 class MultiLayerSelfAttention(nn.Module):

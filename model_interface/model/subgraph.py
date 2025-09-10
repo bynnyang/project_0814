@@ -20,13 +20,13 @@ class ResBottleneck(nn.Module):
         super().__init__()
         self.net = nn.Sequential(
             nn.Linear(in_channels, hidden_unit // 4),
-            nn.LayerNorm(hidden_unit // 4),
+            # nn.LayerNorm(hidden_unit // 4),
             nn.GELU(),
-            nn.Dropout(dropout),
+            # nn.Dropout(dropout),
             nn.Linear(hidden_unit // 4, hidden_unit // 4),
-            nn.LayerNorm(hidden_unit // 4),
+            # nn.LayerNorm(hidden_unit // 4),
             nn.GELU(),
-            nn.Dropout(dropout),
+            # nn.Dropout(dropout),
             nn.Linear(hidden_unit // 4, hidden_unit),
         )
         self.skip = nn.Linear(in_channels, hidden_unit) if in_channels != hidden_unit else nn.Identity()
@@ -39,7 +39,7 @@ class SubGraph(nn.Module):
     Subgraph that computes all vectors in a polyline, and get a polyline-level feature
     """
 
-    def __init__(self, in_channels, num_subgraph_layres=9, hidden_unit=256, max_id = 64, dropout=0.001, use_residual=True, use_norm=True):
+    def __init__(self, in_channels, num_subgraph_layres=9, hidden_unit=256, max_id = 64, dropout=0.001, use_residual=True, use_norm=False):
         super(SubGraph, self).__init__()
         self.convs = nn.ModuleList()
         self.norms = nn.ModuleList() if use_norm else None
@@ -103,7 +103,7 @@ class SubGraph(nn.Module):
             x = F.relu(x)
             
             # 应用dropout
-            x = F.dropout(x, p=self.dropout, training=self.training)
+            # x = F.dropout(x, p=self.dropout, training=self.training)
             
             # 应用残差连接（如果维度匹配）
             if self.use_residual and i == 0 and x.shape[1] == original_x.shape[1]:
@@ -116,8 +116,9 @@ class SubGraph(nn.Module):
         # assert out_data[0].shape[0] % int(data["time_step_len"][0]) == 0
         # except:
             # from pdb import set_trace; set_trace()
-        norm_x = F.normalize(out_data.x, p=2, dim=0, eps=1e-6)
-        return norm_x
+        # norm_x = F.normalize(out_data.x, p=2, dim=0, eps=1e-6)
+        # return norm_x
+        return out_data.x
         # node_feature, _ = torch.max(x, dim=0)
         # # l2 noramlize node_feature before feed it to global graph
         # node_feature = node_feature / node_feature.norm(dim=0)

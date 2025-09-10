@@ -22,7 +22,7 @@ num_workers: 8
 ##################### Data Process #####################
 autoregressive_points: 30
 traj_downsample_stride: 3
-item_number: 3
+item_number: 2
 token_nums: 300
 append_token: 3
 xy_max: 3
@@ -57,7 +57,7 @@ decoder_method: "transformer"
 tf_de_dim: 128
 tf_de_heads: 4
 tf_de_layers: 4
-tf_de_dropout: 0.05
+tf_de_dropout: 0.005
 
 
 in_channels: 11

@@ -35,8 +35,8 @@ class ParkingInferenceModuleReal:
         if mode == "topic":
             self.pub_path(test_data, cnt)
         elif mode == "simulation":
-            delta_predicts, traj_yaw_path = self.pub_simulation(test_data)
-            return delta_predicts, traj_yaw_path
+            delta_predicts= self.pub_simulation(test_data)
+            return delta_predicts
         else:
             assert print("Can't support %s mode!".format(mode))
 
@@ -58,6 +58,7 @@ class ParkingInferenceModuleReal:
 
         x_coords = []
         y_coords = []
+        theta_coords = []
         for point_item in delta_predicts:
             if self.cfg.train_meta_config.item_number == 2:
                 x, y= point_item
@@ -67,15 +68,21 @@ class ParkingInferenceModuleReal:
                 # x, y, progress_bar = point_item
                 # if abs(progress_bar) < 1 - self.cfg.progress_threshold:
                 #     break
-                x, y= point_item
+                x, y, theta= point_item
                 x_coords.append(x)
                 y_coords.append(y)
+                theta_coords.append(theta / 180 * 3.14)
         save_folder = os.path.join(filename,str(cnt),"test")
         os.makedirs(save_folder, exist_ok=True)
         save_path = os.path.join(save_folder, "test")
         plt.ioff()
         plt.figure(figsize=(6, 6))
         plt.scatter(x_coords, y_coords, color='blue', s = 2, label='Coordinates')
+        # L = 0.08   # 箭头长度，按你的坐标系调
+        # dx = L * np.cos(theta_coords)
+        # dy = L * np.sin(theta_coords)
+        # plt.quiver(x_coords, y_coords, dx, dy,
+        #             color='red', width=0.003, scale=1, scale_units='xy', angles='xy')
         plt.title(f'Scene {save_path}')
         plt.xlabel('X')
         plt.ylabel('Y')
@@ -96,8 +103,8 @@ class ParkingInferenceModuleReal:
         delta_predicts = self.inference(test_data)
         delta_predicts = np.array(delta_predicts, dtype=np.float32)
         # delta_predicts = fitting_curve(delta_predicts, num_points=self.cfg.train_meta_config.autoregressive_points, item_number=self.cfg.train_meta_config.item_number)
-        traj_yaw_path = calculate_tangent(np.array(delta_predicts)[:, :2], mode="five_point")
-        return delta_predicts, traj_yaw_path
+        # traj_yaw_path = calculate_tangent(np.array(delta_predicts)[:, :2], mode="five_point")
+        return delta_predicts
 
     def inference(self, data):
         delta_predicts = []
