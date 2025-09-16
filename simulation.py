@@ -43,6 +43,9 @@ g_latest_sensor_dr = None      # 最新收到的 sensor 数据
 g_sensor_fusion_lock = threading.Lock()
 g_sensor_dr_lock = threading.Lock()
 slot_data = None
+g_x = None
+g_y = None
+g_theta = None
 
     
 def load_checkpoint(checkpoint_path, model, optimizer):
@@ -62,7 +65,10 @@ def get_safe_yaw(yaw):
 
 
 def parser_dr_msg(msg) -> CustomizePose: 
-    pose_ret = CustomizePose(x=msg.ego_pose.Pose.x, y=msg.ego_pose.Pose.y, z=0.0, roll=0.0, yaw=msg.ego_pose.Pose.theta / 3.14 * 180, pitch=0.0)
+    if g_theta == None or g_x == None or g_y == None:
+        pose_ret = CustomizePose(x=msg.ego_pose.Pose.x, y=msg.ego_pose.Pose.y, z=0.0, roll=0.0, yaw=msg.ego_pose.Pose.theta / 3.14 * 180, pitch=0.0)
+    else:
+        pose_ret = CustomizePose(x=g_x, y=g_y, z=0.0, roll=0.0, yaw=g_theta / 3.14 * 180, pitch=0.0)
     return pose_ret
 
 def parser_slot_msg(msg):
@@ -436,16 +442,9 @@ def inference(inference_cfg: InferenceConfiguration, parking_inference_model:Par
     g.target_point = torch.from_numpy(np.array(target_point).astype(np.float32))
     g.to(device)
     t1 = time.time()
-    delta_predicts = parking_inference_model.predict(g, 0, "simulation")
+    delta_predicts_map, traj_yaw_path_map = parking_inference_model.predict(g, 0, judge_ego2world_mat, "simulation")
     t2 = time.time()
     print(t2 - t1)
-    delta_predicts_map = []
-    traj_yaw_path_map = []
-    for index in range(len(delta_predicts)):
-        vcs_point = CustomizePose(x=delta_predicts[index][0], y=delta_predicts[index][1], z=0.0, roll=0.0, yaw=delta_predicts[index][2], pitch=0.0)
-        map_point = vcs_point.get_pose_in_world(judge_ego2world_mat)
-        delta_predicts_map.append([map_point.x, map_point.y])
-        traj_yaw_path_map.append(map_point.yaw / 180 * 3.14)
     return delta_predicts_map, traj_yaw_path_map
 
 def sensor_fusion_callback(msg):
@@ -511,6 +510,11 @@ def main():
                 # 推理
                 # t1 = time.time()
                 delta_predicts, traj_yaw_path = inference(inference_cfg, parking_inference_model, data_fusion, data_dr)
+                global g_x,g_y,g_theta
+                if len(delta_predicts) > 5:
+                    g_x = delta_predicts[3][0]
+                    g_y = delta_predicts[3][1]
+                    g_theta = traj_yaw_path[3]
                 # t2 = time.time()
                 # print(t2 - t1)
                 msg = ParkingTrajectory()

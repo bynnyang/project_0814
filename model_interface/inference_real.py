@@ -14,6 +14,7 @@ from utils.traj_post_process import calculate_tangent, fitting_curve
 from utils.trajectory_utils import detokenize_traj_point
 import os
 import matplotlib.pyplot as plt
+from utils.pose_utils import CustomizePose
 
 
 class ParkingInferenceModuleReal:
@@ -31,12 +32,20 @@ class ParkingInferenceModuleReal:
         
         self.EOS_token = self.cfg.train_meta_config.token_nums + self.cfg.train_meta_config.append_token - 2
 
-    def predict(self, test_data, cnt, mode="service"):
+        self.predict_points_record = None
+        
+        self.traj_yaw_path_record = None
+
+        self.cnt = 17
+        self.pre = None
+        self.cur = None
+
+    def predict(self, test_data, cnt, judge_ego2world_mat = None, mode="service"):
         if mode == "topic":
             self.pub_path(test_data, cnt)
         elif mode == "simulation":
-            delta_predicts= self.pub_simulation(test_data)
-            return delta_predicts
+            delta_predicts_map, traj_yaw_path_map= self.pub_simulation(test_data, judge_ego2world_mat)
+            return delta_predicts_map, traj_yaw_path_map
         else:
             assert print("Can't support %s mode!".format(mode))
 
@@ -92,7 +101,7 @@ class ParkingInferenceModuleReal:
         plt.savefig(save_path)
         plt.close()    
 
-    def pub_simulation(self, test_data):
+    def pub_simulation(self, test_data, judge_ego2world_mat):
  
        
         start_token = [self.BOS_token]
@@ -102,9 +111,33 @@ class ParkingInferenceModuleReal:
         self.model.eval()
         delta_predicts = self.inference(test_data)
         delta_predicts = np.array(delta_predicts, dtype=np.float32)
-        # delta_predicts = fitting_curve(delta_predicts, num_points=self.cfg.train_meta_config.autoregressive_points, item_number=self.cfg.train_meta_config.item_number)
-        # traj_yaw_path = calculate_tangent(np.array(delta_predicts)[:, :2], mode="five_point")
-        return delta_predicts
+        delta_predicts = fitting_curve(delta_predicts, num_points=delta_predicts.shape[0], item_number=self.cfg.train_meta_config.item_number)
+        traj_yaw_path = calculate_tangent(np.array(delta_predicts)[:, :2], mode="five_point")
+        points = np.array(delta_predicts)[:, :2]
+        max_index = np.argmax(points[:, 0])
+        max_points = points.shape[0]
+        delta_predicts_map = []
+        traj_yaw_path_map = []
+        for index in range(len(delta_predicts)):
+            vcs_point = CustomizePose(x=delta_predicts[index][0], y=delta_predicts[index][1], z=0.0, roll=0.0, yaw=traj_yaw_path[index], pitch=0.0)
+            map_point = vcs_point.get_pose_in_world(judge_ego2world_mat)
+            delta_predicts_map.append([map_point.x, map_point.y])
+            traj_yaw_path_map.append(map_point.yaw / 180 * 3.14)
+        if (max_index == 0 or max_index == (max_points -1) or  max_index > 5) and self.cnt > 15 and max_points > 5:
+            self.predict_points_record = delta_predicts_map
+            self.traj_yaw_path_record = traj_yaw_path_map
+            self.cur = True
+        else:
+            self.predict_points_record = self.predict_points_record[1:]
+            self.traj_yaw_path_record = self.traj_yaw_path_record[1:]
+            self.cur = False
+        if self.pre == True and self.cur == False:
+            self.cnt = 0
+        self.pre = self.cur
+        self.cnt = self.cnt + 1
+        if self.cnt > 17:
+            self.cnt = 17
+        return self.predict_points_record, self.traj_yaw_path_record
 
     def inference(self, data):
         delta_predicts = []
