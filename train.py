@@ -27,14 +27,14 @@ from inference import test_main
 decay_lr_factor = 0.3
 decay_lr_every = 10
 lr = 0.0001
-epochs = 150
+epochs = 600
 end_epoch = 0
 lr = 0.0001
 show_every = 20
 val_every = 5
 best_minade = float('inf')
 save_dir = './trained_params'
-date_record = "250902"
+date_record = "250916"
 global_step = 0
 
 class MinStepLR(optim.lr_scheduler.StepLR):
@@ -162,7 +162,7 @@ def train(config_obj):
             optimizer.step()
             model.eval()
             with torch.no_grad():
-                padding_idx = 302
+                padding_idx = config_obj.token_nums + config_obj.append_token - 1
                 pre_out = model(data, global_step)
                 pred = pre_out[:, :-1,:]
                 pred_traj_point = pred.reshape(-1, pred.shape[-1])
