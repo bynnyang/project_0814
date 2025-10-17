@@ -295,37 +295,58 @@ class TrajectoryDecoderONNX(nn.Module):
         if global_step is not None:
             self.update_scheduled_sampling_ratio(global_step)
 
+        global_context = point_out
+        
+        # 保存原始目标序列
+        original_tgt = tgt.clone()
+        tgt = tgt[:, :-1]
         batch_size, seq_len = tgt.size()
         output_sequence = torch.zeros_like(tgt)
         output_sequence[:, 0] = tgt[:, 0]
 
-        global_context = point_out
-
         for t in range(1, seq_len):
+            # 创建当前输入序列
             current_input = output_sequence.clone()[:, :t]
+            
+            # 创建掩码
             tgt_mask, tgt_padding_mask = self.create_mask(current_input)
-
+            
+            # 嵌入
             tgt_embedding = self.embedding(current_input)
             step_global_context = global_context.unsqueeze(1).repeat(1, t, 1)
             tgt_embedding = tgt_embedding + step_global_context
             tgt_embedding = self.pos_drop(tgt_embedding + self.pos_embed[:, :t, :])
-
-            pred_traj_points = self.decoder(encoder_out[:, [0]], tgt_embedding, tgt_mask, tgt_padding_mask)
-            last_step_pred = self.output(pred_traj_points[:, -1, :])
+            
+            # 解码
+            pred_traj_points = self.decoder(encoder_out[:,[0]], tgt_embedding, tgt_mask, tgt_padding_mask)
+            
+            # 获取最后一步的预测
+            last_step_pred = pred_traj_points[:, -1, :]
+            last_step_pred = self.output(last_step_pred)
             last_step_pred = self.out_drop(last_step_pred)
-
+            
+            # 应用softmax并选择最可能的token
             pred_token = torch.softmax(last_step_pred, dim=-1).argmax(dim=-1)
+            
+            # 计划采样：决定是使用真实值还是预测值
             use_ground_truth = torch.rand(batch_size, device=self.cfg.device) < self.scheduled_sampling_ratio
             next_token = torch.where(use_ground_truth, tgt[:, t], pred_token)
-            output_sequence[:, t] = next_token
-
+            
+            # 更新输出序列
+            if t < seq_len:
+                output_sequence[:, t] = next_token
+        
         final_global_context = global_context.unsqueeze(1).repeat(1, tgt.size(1), 1)
+
+
+
         tgt_mask, tgt_padding_mask = self.create_mask(output_sequence)
+
         tgt_embedding = self.embedding(output_sequence)
         tgt_embedding = tgt_embedding + final_global_context
         tgt_embedding = self.pos_drop(tgt_embedding + self.pos_embed[:, :seq_len, :])
 
-        pred_traj_points = self.decoder(encoder_out[:, [0]], tgt_embedding, tgt_mask, tgt_padding_mask)
+        pred_traj_points = self.decoder(encoder_out[:,[0]], tgt_embedding, tgt_mask, tgt_padding_mask)
         pred_traj_points = self.output(pred_traj_points)
         pred_traj_points = self.out_drop(pred_traj_points)
         return pred_traj_points
