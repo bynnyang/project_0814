@@ -4,6 +4,7 @@ from torch import nn
 from model_interface.model.bev_encoder import BevEncoder, BevQuery
 from model_interface.model.gru_trajectory_decoder import GRUTrajectoryDecoder
 from model_interface.model.trajectory_decoder import TrajectoryDecoder
+from model_interface.model.trajectory_decoder import TrajectoryDecoderONNX
 from model_interface.model.subgraph import SubGraph
 from model_interface.model.selfatten import MultiLayerSelfAttention
 from utils.config import Configuration
@@ -161,7 +162,8 @@ class ParkingModelReal(nn.Module):
     
     def get_trajectory_decoder(self):
         if self.cfg.decoder_method == "transformer":
-            trajectory_decoder = TrajectoryDecoder(self.cfg)
+            # trajectory_decoder = TrajectoryDecoder(self.cfg)
+            trajectory_decoder = TrajectoryDecoderONNX(self.cfg)
         elif self.cfg.decoder_method == "gru":
             trajectory_decoder = GRUTrajectoryDecoder(self.cfg)
         else:

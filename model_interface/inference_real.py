@@ -15,6 +15,36 @@ from utils.trajectory_utils import detokenize_traj_point
 import os
 import matplotlib.pyplot as plt
 from utils.pose_utils import CustomizePose
+from torch_geometric.data import Data, Batch
+from dataset import GraphData
+from dataset_interface.dataset_real import ParkingDataModuleReal
+from torch.utils.data import DataLoader
+from torch.fx import symbolic_trace
+
+class ParkingModelONNXWrapper(torch.nn.Module):
+    def __init__(self, model,cfg,device):
+        super().__init__()
+        self.model = model
+        self.cfg =cfg
+        self.device = device
+
+    def forward(self, x, y, cluster, edge_index, valid_len, time_step_len, target_point, gt_traj_point_token):
+        # 手动组装成 torch_geometric.Data 结构
+        dummy_input = Data(
+            x = x,
+            y = y,
+            cluster = cluster,
+            edge_index = edge_index,
+            valid_len= valid_len,
+            time_step_len = time_step_len
+        )
+        dummy_input.target_point = target_point
+        dummy_input.gt_traj_point_token = gt_traj_point_token
+        dummy_input.to(self.device)
+
+        # 包装成 Batch
+        # batch_data = Batch.from_data_list([data])
+        return self.model(dummy_input, None)
 
 
 class ParkingInferenceModuleReal:
@@ -24,6 +54,8 @@ class ParkingInferenceModuleReal:
         self.device = None
 
         self.load_model(self.cfg.model_ckpt_path)
+
+        # self.export_onnx(self.cfg.model_ckpt_path, self.cfg)
         
         self.BOS_token = self.cfg.train_meta_config.token_nums
 
@@ -56,8 +88,9 @@ class ParkingInferenceModuleReal:
         start_token = [self.BOS_token]
         test_data["gt_traj_point_token"][0,:] = torch.tensor([start_token], dtype=torch.int64).to(self.device)
         test_data["gt_traj_point_token"] = test_data["gt_traj_point_token"][:,0:1]
-
+        self.model = self.model.to(device=self.device)
         self.model.eval()
+        self.export_onnx(self.cfg.model_ckpt_path, self.cfg, test_data)
         delta_predicts = self.inference(test_data)
         delta_predicts = np.array(delta_predicts, dtype=np.float32)
         # delta_predicts[:,0::2] = delta_predicts[:,0::2] * (self.cfg.train_meta_config.traj_norm_x_max - self.cfg.train_meta_config.traj_norm_x_min) + self.cfg.train_meta_config.traj_norm_x_min
@@ -195,5 +228,75 @@ class ParkingInferenceModuleReal:
         self.model.load_state_dict(ckpt['state_dict'])
         self.model.to(self.device)
         self.model.eval()
+
+    def export_onnx(self, checkpoint_path, cfg, data_set, export_dir="./onnx_exports", date="1013"):
+        """
+        将 PyTorch 模型导出为 ONNX 格式。
+        """
+        os.makedirs(export_dir, exist_ok=True)
+
+        self.model_onnx = ParkingModelReal(self.cfg.train_meta_config)
+        
+        # 加载权重  
+        checkpoint = torch.load(checkpoint_path, map_location="cpu")
+        self.model_onnx.load_state_dict(checkpoint['state_dict'])
+        self.model_onnx = self.model_onnx.to(device=self.device)
+        self.model_onnx.eval()
+
+        # 构造一个示例输入（必须与模型 forward 输入匹配）
+        # 假设模型输入是一个 GraphData 或 Batch 图结构：
+        # 可根据 ParkingModelReal 的 forward 接口修改
+
+        export_onnx_model = ParkingModelONNXWrapper(self.model_onnx, self.cfg, self.device)
+        export_onnx_model = export_onnx_model.to(device=self.device)
+        
+        export_path = os.path.join(export_dir, f"model_export_{date}.onnx")
+
+        num_nodes = 4         # 假设总节点数
+        num_edges = 4         # 假设边数
+        batch_size= 1
+        feature_dim = 4        # x的每个节点特征维度 (x, y, theta, polyline_id)
+        xyz = torch.rand(num_nodes, 3) * 2 - 1  # [-1, 1] 范围随机值
+        polyline_id = torch.arange(num_nodes).unsqueeze(1).float()  # [0, 1, 2, ..., num_nodes-1]
+        x = torch.cat([xyz, polyline_id], dim=1)
+        y = torch.randn(batch_size)
+        # cluster = torch.arange(num_nodes)
+        # cluster = torch.cat([
+        # torch.full((n,), i, dtype=torch.long, device=self.device)   # ✅ fill_value 是数字 i
+        #     for i, n in enumerate(num_nodes)])
+        # cluster = np.arange(num_nodes)
+        cluster = polyline_id.to(torch.int64).squeeze(1)      # 聚类信息
+        # edge_index = torch.randint(0, num_nodes, (2, num_edges))  # 边索引
+        edge_index = torch.arange(num_edges).unsqueeze(0).repeat(2, 1)
+        valid_len = torch.tensor([4], dtype=torch.long)        # 每个图有效节点数
+        time_step_len = torch.tensor([4], dtype=torch.long)
+        target_point = torch.rand(1, 3)
+        start_token = [self.BOS_token]
+        gt_traj_point_token = torch.randint(1, 30, (batch_size,30))
+
+        # 导出模型
+        torch.onnx.export(
+            export_onnx_model,                     # 模型
+            (x, y, cluster, edge_index, valid_len, time_step_len, target_point, gt_traj_point_token),                      # 示例输入
+            export_path,                         # 导出路径
+            export_params=True,                  # 保存权重参数
+            opset_version=11,                    # ONNX opset版本
+            do_constant_folding=True,            # 常量折叠优化
+            input_names=["x", "y", "cluster", "edge_index", "valid_len", "time_step_len", "target_point","gt_traj_point_token"],
+            output_names=["pred_traj_point_token"],
+            dynamic_axes={
+                "x": {0: "num_nodes"},
+                "y": {0: "batch_size"},
+                "cluster": {0: "num_nodes"},
+                "edge_index": {1: "num_edges"},
+                "valid_len": {0: "batch_size"},
+                "time_step_len": {0: "batch_size"},
+                "target_point":{0: "batch_size"},
+                "gt_traj_point_token":{0: "batch_size"},
+                "pred_traj_point_token": {0: "batch_size"}
+            },
+            verbose=True
+        )
+        print(f"✅ ONNX 模型已导出到: {export_path}")
 
 

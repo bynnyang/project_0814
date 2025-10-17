@@ -62,22 +62,62 @@ import os
 #         return torch.bmm(attention_weights, value)
 
 
+class SimpleMultiheadAttention(nn.Module):
+    def __init__(self, embed_dim, num_heads):
+        super().__init__()
+        assert embed_dim % num_heads == 0
+        self.num_heads = num_heads
+        self.head_dim = embed_dim // num_heads
+
+        self.q_proj = nn.Linear(embed_dim, embed_dim)
+        self.k_proj = nn.Linear(embed_dim, embed_dim)
+        self.v_proj = nn.Linear(embed_dim, embed_dim)
+        self.out_proj = nn.Linear(embed_dim, embed_dim)
+
+    def forward(self, x, key_padding_mask=None):
+        B, T, C = x.size()
+        H = self.num_heads
+        D = self.head_dim
+
+        # 线性变换
+        Q = self.q_proj(x)  # B, T, C
+        K = self.k_proj(x)
+        V = self.v_proj(x)
+
+        # 手动 reshape -> B, H, T, D
+        Q = Q.view(B, T, H, D).transpose(1, 2)  # B, H, T, D
+        K = K.view(B, T, H, D).transpose(1, 2)
+        V = V.view(B, T, H, D).transpose(1, 2)
+
+        # 注意力计算
+        scores = torch.matmul(Q, K.transpose(-2, -1)) / (D ** 0.5)  # B, H, T, T
+
+        if key_padding_mask is not None:
+            mask = key_padding_mask[:, None, None, :]  # B,1,1,T
+            scores = scores.masked_fill(mask, float('-inf'))
+
+        attn = torch.softmax(scores, dim=-1)
+        out = torch.matmul(attn, V)  # B, H, T, D
+
+        # 合并头
+        out = out.transpose(1, 2).contiguous().view(B, T, C)
+        out = self.out_proj(out)
+        return out
+
+
+
 class SelfAttentionLayer(nn.Module):
     def __init__(self, in_channels, global_graph_width, num_heads=8):
         super().__init__()
         assert global_graph_width % num_heads == 0
-        self.mha = nn.MultiheadAttention(
-            embed_dim=global_graph_width,
-            num_heads=num_heads,
-            batch_first=True
-        )
+        self.mha = SimpleMultiheadAttention(embed_dim=global_graph_width, num_heads=num_heads)
         self.lin = nn.Linear(in_channels, global_graph_width)
         self.norm = nn.LayerNorm(global_graph_width)
 
     def forward(self, x, valid_len):
         x = self.lin(x)
         mask = torch.arange(x.size(1), device=x.device)[None, :] > valid_len[:, None]
-        out, _ = self.mha(x, x, x, key_padding_mask=mask)
+        out= self.mha(x, key_padding_mask=mask)
         return out + x   # 残差 + LayerNorm
     
 

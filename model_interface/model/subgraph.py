@@ -15,6 +15,14 @@ import pdb
 import os
 
 
+# class MaxPoolONNX(torch.nn.Module):
+#     def forward(self, x, cluster):
+#         num_clusters = cluster.max() + 1
+#         out = torch.zeros((num_clusters, x.size(1)), device=x.device)
+#         out = out.scatter_reduce(0, cluster.unsqueeze(-1).expand(-1, x.size(1)), x, reduce='amax')
+#         return out
+
+
 class ResBottleneck(nn.Module):
     def __init__(self, in_channels, hidden_unit, dropout=0.1):
         super().__init__()
@@ -110,15 +118,22 @@ class SubGraph(nn.Module):
                 x = x + original_x
 
         data.x = x
-        # out_data = avg_pool_x(data.cluster, data.x, data.batch)
-        out_data = max_pool(data.cluster, data)
+
+        # self.max_pool = MaxPoolONNX()
+        # # out_data = avg_pool_x(data.cluster, data.x, data.batch)
+        # x_new = self.max_pool(data.x, data.cluster)
+        num_clusters = data.cluster.max() + 1
+        out = torch.zeros((num_clusters, data.x.size(1)), device=data.x.device)
+        for i in range(num_clusters):
+            mask = (data.cluster == i)
+            out[i] = data.x[mask].max(dim=0)[0]
         # try:
         # assert out_data[0].shape[0] % int(data["time_step_len"][0]) == 0
         # except:
             # from pdb import set_trace; set_trace()
         # norm_x = F.normalize(out_data.x, p=2, dim=0, eps=1e-6)
         # return norm_x
-        return out_data.x
+        return out
         # node_feature, _ = torch.max(x, dim=0)
         # # l2 noramlize node_feature before feed it to global graph
         # node_feature = node_feature / node_feature.norm(dim=0)
