@@ -8,7 +8,6 @@ from model_interface.model.trajectory_decoder import TrajectoryDecoderONNX
 from model_interface.model.subgraph import SubGraph
 from model_interface.model.selfatten import MultiLayerSelfAttention
 from utils.config import Configuration
-from model_interface.model.predmlp import TrajPredMLP
 
 
 
