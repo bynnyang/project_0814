@@ -30,7 +30,7 @@ class EncoderONNXWrapper(torch.nn.Module):
         self.cfg = cfg
         self.device = device
 
-    def forward(self, x, y, cluster, edge_index, valid_len, time_step_len, target_point, gt_traj_point_token):
+    def forward(self, x, y, cluster, edge_index, valid_len, time_step_len):
         x, y, cluster, edge_index, valid_len, time_step_len = [
             t.to(torch.int32) if t.dtype == torch.int64 else t
             for t in [x, y, cluster, edge_index, valid_len, time_step_len]
@@ -313,10 +313,10 @@ class ParkingInferenceModuleReal:
         
         export_path_EncoderONNXWrapper = os.path.join(export_dir, f"EncoderONNXWrapper_{date}.onnx")
 
-        num_nodes = 4         # 假设总节点数
-        num_edges = 4         # 假设边数
+        num_nodes = 50         # 假设总节点数
+        num_edges = 40         # 假设边数
         batch_size= 1
-        num_clusters = 4      
+        num_clusters = 50     
         xyz = torch.rand(num_nodes, 3) * 2 - 1  # [-1, 1] 范围随机值
         polyline_id = torch.arange(num_nodes).unsqueeze(1).float()  # [0, 1, 2, ..., num_nodes-1]
         x = torch.cat([xyz, polyline_id], dim=1)
@@ -329,8 +329,8 @@ class ParkingInferenceModuleReal:
         cluster = polyline_id.to(torch.int32).squeeze(1)      # 聚类信息
         # edge_index = torch.randint(0, num_nodes, (2, num_edges), dtype=torch.int32)  # 边索引
         edge_index = torch.arange(num_edges, dtype=torch.int32).unsqueeze(0).repeat(2, 1)
-        valid_len = torch.tensor([4], dtype=torch.int32)        # 每个图有效节点数
-        time_step_len = torch.tensor([4], dtype=torch.int32)
+        valid_len = torch.tensor([49], dtype=torch.int32)        # 每个图有效节点数
+        time_step_len = torch.tensor([50], dtype=torch.int32)
         target_point = torch.rand(batch_size, 3)
         start_token = [self.BOS_token]
         gt_traj_point_token = torch.randint(1, 30, (batch_size,30))
@@ -363,23 +363,14 @@ class ParkingInferenceModuleReal:
 
         torch.onnx.export(
             encoder_wrapper,                     # 模型
-            (x, y, cluster, edge_index, valid_len, time_step_len, target_point, gt_traj_point_token),                      # 示例输入
+            (x, y, cluster, edge_index, valid_len, time_step_len),                      # 示例输入
             export_path_EncoderONNXWrapper,                    # 导出路径
             export_params=True,                  # 保存权重参数
             opset_version=11,                    # ONNX opset版本
             do_constant_folding=True,            # 常量折叠优化
-            input_names=["x", "y", "cluster", "edge_index", "valid_len", "time_step_len", "target_point","gt_traj_point_token"],
+            input_names=["x", "y", "cluster", "edge_index", "valid_len", "time_step_len"],
             output_names=["global_feat"],
             dynamic_axes={
-                "x": {0: "num_nodes"},
-                "y": {0: "batch_size"},
-                "cluster": {0: "num_clusters"},
-                "edge_index": {1: "num_edges"},
-                "valid_len": {0: "batch_size"},
-                "time_step_len": {0: "batch_size"},
-                "target_point":{0: "batch_size"},
-                "gt_traj_point_token":{0: "batch_size"},
-                "global_feat":{0: "batch_size", 1: "num_clusters"}
             }
         )
         print(f"✅ ONNX 模型已导出到: {export_path_EncoderONNXWrapper}")
@@ -408,7 +399,7 @@ class ParkingInferenceModuleReal:
         decoder_wrapper = decoder_wrapper.to(device=self.device)
         export_path_DecoderONNXWrapper = os.path.join(export_dir, f"DecoderONNXWrapper_{date}.onnx")
 
-        dummy_encoder_out = torch.randn(1, self.cfg.train_meta_config.global_graph_width).to(device=self.device)
+        dummy_encoder_out = torch.randn(batch_size, 1, self.cfg.train_meta_config.global_graph_width).to(device=self.device)
         dummy_point_out = torch.randn(1, self.cfg.train_meta_config.global_graph_width).to(device=self.device)
         dummy_gt_token = torch.randint(0, self.cfg.train_meta_config.token_nums, (1, 60)).to(device=self.device)
 

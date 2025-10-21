@@ -85,7 +85,7 @@ class SubGraph(nn.Module):
         """
 
         geo_feat = sub_data.x[:, :3]                     # 几何特征 (N,3)
-        id_index = sub_data.x[:, 3].long()               # id 列 (N,)
+        id_index = sub_data.x[:, 3].to(torch.int32)               # id 列 (N,)
         id_feat  = self.id_emb(id_index)             # (N, 8)
 
         # 拼接

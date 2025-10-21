@@ -219,7 +219,7 @@ class ONNXMultiheadAttention(nn.Module):
             # 如果是 2D mask（L, L），需要 broadcast 到 batch/n_heads
             if tgt_mask.dim() == 2:
                 tgt_mask = tgt_mask[None, None,  :, :] 
-            scores = scores.masked_fill(tgt_mask.bool(), float('-inf'))
+            scores = scores + tgt_mask.to(scores.device)
         if tgt_key_padding_mask is not None:
             mask = tgt_key_padding_mask[:, None, None, :]  # B,1,1,T
             scores = scores.masked_fill(mask, float('-inf'))
@@ -384,7 +384,9 @@ class TrajectoryDecoderONNX(nn.Module):
             self.scheduled_sampling_ratio = max(self.scheduled_sampling_ratio, 0.01)
 
     def create_mask(self, tgt):
-        tgt_mask = (torch.triu(torch.ones((tgt.shape[1], tgt.shape[1]), device=self.cfg.device)) == 1).transpose(0, 1)
+        mask = (torch.arange(tgt.shape[1]).unsqueeze(1) >= torch.arange(tgt.shape[1]).unsqueeze(0)).float()
+        tgt_mask = mask.to(self.cfg.device)
+        # tgt_mask = (torch.triu(torch.ones((tgt.shape[1], tgt.shape[1]), device=self.cfg.device)) == 1).transpose(0, 1)
         tgt_mask = tgt_mask.float().masked_fill(tgt_mask == 0, float('-inf')).masked_fill(tgt_mask == 1, float(0.0))
         tgt_padding_mask = (tgt == self.PAD_token)
         return tgt_mask, tgt_padding_mask
