@@ -151,7 +151,7 @@ class TrajectoryDecoder(nn.Module):
 # ----------------------------
 # ONNX-friendly MultiheadAttention
 # ----------------------------
-class ONNXMultiheadAttention(nn.Module):
+class ONNXMultiheadAttention_Old(nn.Module):
     def __init__(self, embed_dim, num_heads):
         super().__init__()
         assert embed_dim % num_heads == 0
@@ -190,12 +190,87 @@ class ONNXMultiheadAttention(nn.Module):
         out = out.transpose(1, 2).contiguous().view(B, T, C)
         out = self.out_proj(out)
         return out
+    
+class ONNXMultiheadAttention(nn.Module):
+    def __init__(self, d_model, n_heads, dropout=0.1):
+        super().__init__()
+        self.d_model = d_model
+        self.n_heads = n_heads
+        self.d_k = d_model // n_heads
+ 
+        assert (
+             self.d_k * n_heads == d_model
+         ), f"d_model {d_model} not divisible by n_heads {n_heads}"
+
+        self.W_q = nn.Linear(d_model, d_model)
+        self.W_k = nn.Linear(d_model, d_model)
+        self.W_v = nn.Linear(d_model, d_model)
+        self.W_o = nn.Linear(d_model, d_model)
+
+        self.dropout = nn.Dropout(dropout)
+
+    def scaled_dot_product_attention(self, Q, K, V, tgt_mask=None, tgt_key_padding_mask=None):
+         # Q: (batch_size, n_heads, seq_len, d_k)
+         # K: (batch_size, n_heads, seq_len, d_k)
+         # V: (batch_size, n_heads, seq_len, d_k)
+
+        scores = torch.matmul(Q, K.transpose(-2, -1)) / (self.d_k ** 0.5)  # (batch_size, n_heads, seq_len, seq_len)
+        if tgt_mask is not None:
+            # 如果是 2D mask（L, L），需要 broadcast 到 batch/n_heads
+            if tgt_mask.dim() == 2:
+                tgt_mask = tgt_mask[None, None,  :, :] 
+            scores = scores.masked_fill(tgt_mask.bool(), float('-inf'))
+        if tgt_key_padding_mask is not None:
+            mask = tgt_key_padding_mask[:, None, None, :]  # B,1,1,T
+            scores = scores.masked_fill(mask, float('-inf'))
+         
+        attn_weights = torch.softmax(scores, dim=-1)    # (batch_size, n_heads, seq_len, seq_len)
+        attn_weights = self.dropout(attn_weights)    # apply dropout to attention weights
+        output = torch.matmul(attn_weights, V)    # (batch_size, n_heads, seq_len, d_k)
+        return output
+     
+    def forward(self, Q, K, V, tgt_mask=None, tgt_key_padding_mask=None):
+         # Q: (batch_size, seq_len, d_model)
+         # K: (batch_size, seq_len, d_model)
+         # V: (batch_size, seq_len, d_model)
+
+        batch_size = Q.size(0)
+
+         # (batch_size, seq_len, d_model) -> (batch_size, n_heads, seq_len, d_k)
+        Q = self.W_q(Q).view(batch_size, -1, self.n_heads, self.d_k).transpose(1, 2)    # (batch_size, n_heads, seq_len, d_k)
+        K = self.W_k(K).view(batch_size, -1, self.n_heads, self.d_k).transpose(1, 2)    # (batch_size, n_heads, seq_len, d_k)
+        V = self.W_v(V).view(batch_size, -1, self.n_heads, self.d_k).transpose(1, 2)    # (batch_size, n_heads, seq_len, d_k)
+
+         # scaled dot-product attention
+        attn_output = self.scaled_dot_product_attention(Q, K, V, tgt_mask=tgt_mask, tgt_key_padding_mask=tgt_key_padding_mask)    # (batch_size, n_heads, seq_len, d_k)
+
+         # (batch_size, n_heads, seq_len, d_k) -> (batch_size, seq_len, d_model)
+        attn_output = attn_output.transpose(1, 2).contiguous().view(batch_size, -1, self.d_model)    # (batch_size, seq_len, d_model)
+        output = self.W_o(attn_output)    # (batch_size, seq_len, d_model)
+        return output    # (batch_size, seq_len, d_model)
+    
+
+class ONNXFeedForward(nn.Module):
+    def __init__(self, d_model, d_ff, dropout=0.1):
+        super().__init__()
+        self.linear1 = nn.Linear(d_model, d_ff)
+        self.dropout = nn.Dropout(dropout)
+        self.linear2 = nn.Linear(d_ff, d_model)
+        self.activation = nn.ReLU()
+
+    def forward(self, x):
+         # x: (batch_size, seq_len, d_model)
+        x = self.linear1(x)    # (batch_size, seq_len, d_ff)
+        x = self.activation(x)    # (batch_size, seq_len, d_ff)
+        x = self.dropout(x)    # (batch_size, seq_len, d_ff)
+        x = self.linear2(x)    # (batch_size, seq_len, d_model)
+        return x    # (batch_size, seq_len, d_model)
 
 
 # ----------------------------
 # ONNX-friendly Transformer Decoder Layer
 # ----------------------------
-class ONNXTransformerDecoderLayer(nn.Module):
+class ONNXTransformerDecoderLayer_Old(nn.Module):
     def __init__(self, d_model, num_heads, dim_feedforward=2048, dropout=0.1):
         super().__init__()
         self.self_attn = ONNXMultiheadAttention(d_model, num_heads)
@@ -219,6 +294,38 @@ class ONNXTransformerDecoderLayer(nn.Module):
         tgt = tgt + self.dropout2(tgt2)
         tgt = self.norm2(tgt)
         return tgt
+    
+class ONNXTransformerDecoderLayer(nn.Module):
+    def __init__(self, d_model, n_heads, d_ff=2048, dropout=0.1):
+        super().__init__()
+        self.self_attn = ONNXMultiheadAttention(d_model, n_heads, dropout)
+        self.dropout1 = nn.Dropout(dropout)
+        self.norm1 = nn.LayerNorm(d_model)
+
+        self.cross_attn = ONNXMultiheadAttention(d_model, n_heads, dropout)
+        self.dropout2 = nn.Dropout(dropout)
+        self.norm2 = nn.LayerNorm(d_model)
+
+        self.ffn = ONNXFeedForward(d_model, d_ff, dropout)
+        self.dropout3 = nn.Dropout(dropout)
+        self.norm3 = nn.LayerNorm(d_model)
+
+    def forward(self, tgt, src, tgt_mask=None, tgt_key_padding_mask=None):
+        # tgt: (batch_size, tgt_seq_len, d_model)
+        # memory: (batch_size, src_seq_len, d_model)
+        # tgt_mask: (batch_size, 1, 1, tgt_seq_len)
+        # src_mask: (batch_size, 1, 1, src_seq_len)
+
+        x = tgt
+        output = self.self_attn(x, x, x, tgt_mask, tgt_key_padding_mask)    # (batch_size, tgt_seq_len, d_model)
+        x = self.norm1(x + self.dropout1(output))    # add & norm
+
+        output = self.cross_attn(x, src, src)    # (batch_size, seq_len, d_model)
+        x = self.norm2(x + self.dropout2(output))    # add & norm
+
+        output = self.ffn(x)    # (batch_size, seq_len, d_model)
+        x = self.norm3(x + self.dropout3(output))    # add & norm
+        return x    # (batch_size, seq_len, d_model)
 
 
 # ----------------------------
@@ -255,8 +362,7 @@ class TrajectoryDecoderONNX(nn.Module):
         self.pos_embed = nn.Parameter(torch.randn(1, self.cfg.item_number * item_cnt + 2, self.cfg.tf_de_dim) * .02)
 
         # 使用 ONNX-friendly Transformer
-        tf_layer = ONNXTransformerDecoderLayer(d_model=self.cfg.tf_de_dim, num_heads=self.cfg.tf_de_heads,
-                                               dim_feedforward=self.cfg.tf_de_dim*4, dropout=self.cfg.tf_de_dropout)
+        tf_layer = ONNXTransformerDecoderLayer(d_model=self.cfg.tf_de_dim, n_heads=self.cfg.tf_de_heads)
         self.tf_decoder = ONNXTransformerDecoder(tf_layer, num_layers=self.cfg.tf_de_layers)
 
         self.output = nn.Linear(self.cfg.tf_de_dim, self.cfg.token_nums + self.cfg.append_token)

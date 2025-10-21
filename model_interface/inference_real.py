@@ -30,7 +30,7 @@ class EncoderONNXWrapper(torch.nn.Module):
         self.cfg = cfg
         self.device = device
 
-    def forward(self, x, y, cluster, edge_index, valid_len, time_step_len):
+    def forward(self, x, y, cluster, edge_index, valid_len, time_step_len, target_point, gt_traj_point_token):
         x, y, cluster, edge_index, valid_len, time_step_len = [
             t.to(torch.int32) if t.dtype == torch.int64 else t
             for t in [x, y, cluster, edge_index, valid_len, time_step_len]
@@ -44,7 +44,7 @@ class EncoderONNXWrapper(torch.nn.Module):
             time_step_len = time_step_len
         )
         dummy_input.to(self.device)
-        time_step_len = int(dummy_input["time_step_len"][0])
+        time_step_len =dummy_input["time_step_len"][0]
         valid_lens = dummy_input["valid_len"]
         sub_graph_out = self.subgraph(dummy_input)
         x = sub_graph_out.view(-1, time_step_len, self.cfg.subgraph_width)
@@ -69,6 +69,8 @@ class DecoderONNXWrapper(torch.nn.Module):
         self.trajectory_decoder = model.trajectory_decoder
 
     def forward(self, encoder_out, point_out, gt_traj_point_token):
+        if gt_traj_point_token.dtype == torch.int64:
+            gt_traj_point_token = gt_traj_point_token.to(torch.int32)
         return self.trajectory_decoder(encoder_out, point_out, gt_traj_point_token)
 
 class ParkingModelONNXWrapper(torch.nn.Module):
@@ -324,11 +326,11 @@ class ParkingInferenceModuleReal:
         # torch.full((n,), i, dtype=torch.long, device=self.device)   # ✅ fill_value 是数字 i
         #     for i, n in enumerate(num_nodes)])
         # cluster = np.arange(num_nodes)
-        cluster = polyline_id.to(torch.int64).squeeze(1)      # 聚类信息
-        # edge_index = torch.randint(0, num_nodes, (2, num_edges))  # 边索引
-        edge_index = torch.arange(num_edges).unsqueeze(0).repeat(2, 1)
-        valid_len = torch.tensor([4], dtype=torch.long)        # 每个图有效节点数
-        time_step_len = torch.tensor([4], dtype=torch.long)
+        cluster = polyline_id.to(torch.int32).squeeze(1)      # 聚类信息
+        # edge_index = torch.randint(0, num_nodes, (2, num_edges), dtype=torch.int32)  # 边索引
+        edge_index = torch.arange(num_edges, dtype=torch.int32).unsqueeze(0).repeat(2, 1)
+        valid_len = torch.tensor([4], dtype=torch.int32)        # 每个图有效节点数
+        time_step_len = torch.tensor([4], dtype=torch.int32)
         target_point = torch.rand(batch_size, 3)
         start_token = [self.BOS_token]
         gt_traj_point_token = torch.randint(1, 30, (batch_size,30))
@@ -361,23 +363,24 @@ class ParkingInferenceModuleReal:
 
         torch.onnx.export(
             encoder_wrapper,                     # 模型
-            (x, y, cluster, edge_index, valid_len, time_step_len),                      # 示例输入
+            (x, y, cluster, edge_index, valid_len, time_step_len, target_point, gt_traj_point_token),                      # 示例输入
             export_path_EncoderONNXWrapper,                    # 导出路径
             export_params=True,                  # 保存权重参数
             opset_version=11,                    # ONNX opset版本
             do_constant_folding=True,            # 常量折叠优化
-            input_names=["x", "y", "cluster", "edge_index", "valid_len", "time_step_len"],
+            input_names=["x", "y", "cluster", "edge_index", "valid_len", "time_step_len", "target_point","gt_traj_point_token"],
             output_names=["global_feat"],
             dynamic_axes={
                 "x": {0: "num_nodes"},
                 "y": {0: "batch_size"},
-                "cluster": {0: "num_nodes"},
+                "cluster": {0: "num_clusters"},
                 "edge_index": {1: "num_edges"},
                 "valid_len": {0: "batch_size"},
                 "time_step_len": {0: "batch_size"},
+                "target_point":{0: "batch_size"},
+                "gt_traj_point_token":{0: "batch_size"},
                 "global_feat":{0: "batch_size", 1: "num_clusters"}
-            },
-            verbose=True
+            }
         )
         print(f"✅ ONNX 模型已导出到: {export_path_EncoderONNXWrapper}")
 
@@ -392,6 +395,7 @@ class ParkingInferenceModuleReal:
             (dummy_target_point,),
             export_path_TrajInputEmbeddingONNXWrapper,
             opset_version=11,
+            do_constant_folding=True,
             input_names=["target_point"],
             output_names=["point_out"],
             dynamic_axes={"target_point": {0: "batch_size"}, "point_out": {0: "batch_size"}}
@@ -413,6 +417,7 @@ class ParkingInferenceModuleReal:
             (dummy_encoder_out, dummy_point_out, dummy_gt_token),
             export_path_DecoderONNXWrapper,
             opset_version=11,
+            do_constant_folding=True,
             input_names=["encoder_out", "point_out", "gt_traj_point_token"],
             output_names=["pred_traj_point"],
             dynamic_axes={
