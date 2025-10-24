@@ -3,6 +3,7 @@ from torch import nn
 from timm.models.layers import trunc_normal_
 
 from utils.config import Configuration
+import numpy as np
 
 
 class TrajectoryDecoder(nn.Module):
@@ -354,8 +355,7 @@ class TrajectoryDecoderONNX(nn.Module):
         self.scheduled_sampling_ratio = 1.0
         self.scheduled_sampling_decay_step = 1000
         self.scheduled_sampling_decay_rate = 0.98
-
-        self.embedding = nn.Embedding(self.cfg.token_nums + self.cfg.append_token, self.cfg.tf_de_dim)
+        self.embedding = nn.Embedding(np.int32(self.cfg.token_nums + self.cfg.append_token), np.int32(self.cfg.tf_de_dim))
         self.pos_drop = nn.Dropout(self.cfg.tf_de_dropout)
 
         item_cnt = self.cfg.autoregressive_points
@@ -474,6 +474,7 @@ class TrajectoryDecoderONNX(nn.Module):
         tgt_mask, tgt_padding_mask = self.create_mask(tgt)
         final_global_context = global_context.unsqueeze(1).repeat(1, tgt.size(1), 1)
 
+        tgt = tgt.to(torch.int32)
         tgt_embedding = self.embedding(tgt)
         tgt_embedding = tgt_embedding + final_global_context
         tgt_embedding = tgt_embedding + self.pos_embed[:, :tgt.size(1), :]

@@ -30,14 +30,27 @@ class EncoderONNXWrapper(torch.nn.Module):
         self.cfg = cfg
         self.device = device
 
-    def forward(self, x, y, cluster, edge_index, valid_len, time_step_len):
-        x, y, cluster, edge_index, valid_len, time_step_len = [
-            t.to(torch.int32) if t.dtype == torch.int64 else t
-            for t in [x, y, cluster, edge_index, valid_len, time_step_len]
+    def forward(self, x, cluster, edge_index, valid_len, time_step_len):
+        x, cluster, edge_index, valid_len, time_step_len = [
+            t.to(torch.int64) if t.dtype == torch.int32 else t
+            for t in [x, cluster, edge_index, valid_len, time_step_len]
         ]
+        # x_new = x.squeeze(0)
+        # x_new = x_new.squeeze(0)
+        # edge_index_new = edge_index.squeeze(0)
+        # edge_index_new = edge_index_new.squeeze(0)
+        # cluster_new = cluster.reshape(-1)
+        # valid_len_new = valid_len.reshape(-1)
+        # time_step_new = time_step_len.reshape(-1)
+        # dummy_input = Data(
+        #     x = x_new,
+        #     cluster = cluster_new,
+        #     edge_index = edge_index_new,
+        #     valid_len= valid_len_new,
+        #     time_step_len = time_step_new
+        # )
         dummy_input = Data(
             x = x,
-            y = y,
             cluster = cluster,
             edge_index = edge_index,
             valid_len= valid_len,
@@ -82,10 +95,10 @@ class ParkingModelONNXWrapper(torch.nn.Module):
 
     def forward(self, x, y, cluster, edge_index, valid_len, time_step_len, target_point, gt_traj_point_token):
         # 手动组装成 torch_geometric.Data 结构
-        x, y, cluster, edge_index, valid_len, time_step_len, target_point, gt_traj_point_token = [
-            t.to(torch.int32) if t.dtype == torch.int64 else t
-            for t in [x, y, cluster, edge_index, valid_len, time_step_len, target_point, gt_traj_point_token]
-        ]
+        # x, y, cluster, edge_index, valid_len, time_step_len, target_point, gt_traj_point_token = [
+        #     t.to(torch.int32) if t.dtype == torch.int64 else t
+        #     for t in [x, y, cluster, edge_index, valid_len, time_step_len, target_point, gt_traj_point_token]
+        # ]
         dummy_input = Data(
             x = x,
             y = y,
@@ -313,27 +326,132 @@ class ParkingInferenceModuleReal:
         
         export_path_EncoderONNXWrapper = os.path.join(export_dir, f"EncoderONNXWrapper_{date}.onnx")
 
-        num_nodes = 50         # 假设总节点数
-        num_edges = 40         # 假设边数
+        num_nodes = 82         # 假设总节点数
+        num_edges = 4
         batch_size= 1
-        num_clusters = 50     
-        xyz = torch.rand(num_nodes, 3) * 2 - 1  # [-1, 1] 范围随机值
-        polyline_id = torch.arange(num_nodes).unsqueeze(1).float()  # [0, 1, 2, ..., num_nodes-1]
-        x = torch.cat([xyz, polyline_id], dim=1)
-        y = torch.randn(batch_size)
+        # xyz = torch.rand(num_nodes, 3) * 2 + 1  # [-1, 1] 范围随机值
+        # polyline_id = torch.arange(num_nodes).unsqueeze(1).float()  # [0, 1, 2, ..., num_nodes-1]
+        # x = torch.cat([xyz, polyline_id], dim=1)
+        # y = torch.randn(batch_size)
+        x = torch.tensor([[0.5103,  0.5121,  0.5000,  0.0000],
+                          [0.4554,  0.5122,  0.5000,  0.0000],
+                          [0.4553,  0.3777,  0.5000,  0.0000],
+                          [0.5102,  0.3776,  0.5000,  0.0000],
+                          [0.4702,  0.4856,  0.4995,  1.0000],
+                          [0.7858,  0.2795,  0.2488,  2.0000],
+                          [0.7855,  0.2357,  0.2488,  2.0000],
+                          [0.7812,  0.5448,  0.5777,  3.0000],
+                          [0.7903,  0.5502,  0.5777,  3.0000],
+                          [0.7903,  0.5502,  0.5417,  4.0000],
+                          [0.8028,  0.5539,  0.5417,  4.0000],
+                          [0.7820,  0.5535,  0.4456,  5.0000],
+                          [0.7903,  0.5502,  0.4456,  5.0000],
+                          [0.8028,  0.5539,  0.5548,  6.0000],
+                          [0.8142,  0.5584,  0.5548,  6.0000],
+                          [0.5847,  0.5876,  0.7494,  7.0000],
+                          [0.5847,  0.5941,  0.7494,  7.0000],
+                          [0.5766,  0.5625,  0.6929,  8.0000],
+                          [0.5842,  0.5850,  0.6929,  8.0000],
+                          [0.5961,  0.3259,  0.4015,  9.0000],
+                          [0.6011,  0.3220,  0.4015,  9.0000],
+                          [0.5621,  0.5270,  0.4944, 10.0000],
+                          [0.5648,  0.5269,  0.4944, 10.0000],
+                          [0.5376,  0.5269,  0.5008, 11.0000],
+                          [0.5590,  0.5270,  0.5008, 11.0000],
+                          [0.4744,  0.5663,  0.4990, 12.0000],
+                          [0.5240,  0.5659,  0.4990, 12.0000],
+                          [0.5622,  0.2818,  0.2476, 13.0000],
+                          [0.5617,  0.2452,  0.2476, 13.0000],
+                          [0.5795,  0.3522,  0.3585, 14.0000],
+                          [0.5872,  0.3417,  0.3585, 14.0000],
+                          [0.5882,  0.3117,  0.1861, 15.0000],
+                          [0.5853,  0.3043,  0.1861, 15.0000],
+                          [0.5897,  0.3148,  0.7666, 16.0000],
+                          [0.5875,  0.3387,  0.7666, 16.0000],
+                          [0.7806,  0.5323,  0.2465, 17.0000],
+                          [0.7804,  0.5217,  0.2465, 17.0000],
+                          [0.5840,  0.3031,  0.1484, 18.0000],
+                          [0.5761,  0.2914,  0.1484, 18.0000],
+                          [0.5016,  0.3506,  0.5070, 19.0000],
+                          [0.5157,  0.3513,  0.5070, 19.0000],
+                          [0.8940,  0.5448,  0.4987, 20.0000],
+                          [0.9473,  0.5443,  0.4987, 20.0000],
+                          [0.5357,  0.2725,  0.4975, 21.0000],
+                          [0.5636,  0.2720,  0.4975, 21.0000],
+                          [0.5636,  0.2720,  0.2475, 22.0000],
+                          [0.5632,  0.2461,  0.2475, 22.0000],
+                          [0.5632,  0.2461,  0.9975, 23.0000],
+                          [0.5353,  0.2466,  0.9975, 23.0000],
+                          [0.5353,  0.2466,  0.7475, 24.0000],
+                          [0.5357,  0.2725,  0.7475, 24.0000],
+                          [0.8114,  0.2425,  0.9965, 25.0000],
+                          [0.7861,  0.2431,  0.9965, 25.0000],
+                          [0.7861,  0.2431,  0.7465, 26.0000],
+                          [0.7867,  0.2690,  0.7465, 26.0000],
+                          [0.7867,  0.2690,  0.4965, 27.0000],
+                          [0.8119,  0.2684,  0.4965, 27.0000],
+                          [0.8119,  0.2684,  0.2465, 28.0000],
+                          [0.8114,  0.2425,  0.2465, 28.0000],
+                          [0.4343,  0.5193,  0.2459, 29.0000],
+                          [0.4328,  0.4519,  0.2459, 29.0000],
+                          [0.4828,  0.4855,  0.5000, 30.0000],
+                          [0.4828,  0.4855,  0.5000, 31.0000],
+                          [0.4828,  0.4855,  0.5000, 32.0000],
+                          [0.4828,  0.4855,  0.5000, 33.0000],
+                          [0.4828,  0.4855,  0.5000, 34.0000],
+                          [0.4828,  0.4855,  0.5000, 35.0000],
+                          [0.4828,  0.4855,  0.5000, 36.0000],
+                          [0.4828,  0.4855,  0.5000, 37.0000],
+                          [0.4828,  0.4855,  0.5000, 38.0000],
+                          [0.4828,  0.4855,  0.5000, 39.0000],
+                          [0.4828,  0.4855,  0.5000, 40.0000],
+                          [0.4828,  0.4855,  0.5000, 41.0000],
+                          [0.4828,  0.4855,  0.5000, 42.0000],
+                          [0.4828,  0.4855,  0.5000, 43.0000],
+                          [0.4828,  0.4855,  0.5000, 44.0000],
+                          [0.4828,  0.4855,  0.5000, 45.0000],
+                          [0.4828,  0.4855,  0.5000, 46.0000],
+                          [0.4828,  0.4855,  0.5000, 47.0000],
+                          [0.4828,  0.4855,  0.5000, 48.0000],
+                          [0.4828,  0.4855,  0.5000, 49.0000],
+                          [0.4828,  0.4855,  0.5000, 50.0000]], dtype=torch.float32)
+        polyline_id = torch.tensor([ 0,  0,  0,  0,  1,  2,  2,  3,  3,  4,  4,  5,  5,  6,  6,  7,  7,  8,
+         8,  9,  9, 10, 10, 11, 11, 12, 12, 13, 13, 14, 14, 15, 15, 16, 16, 17,
+        17, 18, 18, 19, 19, 20, 20, 21, 21, 22, 22, 23, 23, 24, 24, 25, 25, 26,
+        26, 27, 27, 28, 28, 29, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40,
+        41, 42, 43, 44, 45, 46, 47, 48, 49, 50])
+        # x = torch.cat([xyz, polyline_id.unsqueeze(1).float()], dim=1)
+        # x = x[None, None, :, :]
         # cluster = torch.arange(num_nodes)
         # cluster = torch.cat([
         # torch.full((n,), i, dtype=torch.long, device=self.device)   # ✅ fill_value 是数字 i
         #     for i, n in enumerate(num_nodes)])
-        # cluster = np.arange(num_nodes)
-        cluster = polyline_id.to(torch.int32).squeeze(1)      # 聚类信息
+        cluster = polyline_id.to(torch.int32)
+        # cluster = cluster[None, None, None, :]
+        # cluster = polyline_id.to(torch.int32).squeeze(1)      # 聚类信息
         # edge_index = torch.randint(0, num_nodes, (2, num_edges), dtype=torch.int32)  # 边索引
-        edge_index = torch.arange(num_edges, dtype=torch.int32).unsqueeze(0).repeat(2, 1)
-        valid_len = torch.tensor([49], dtype=torch.int32)        # 每个图有效节点数
-        time_step_len = torch.tensor([50], dtype=torch.int32)
+        edge_index = torch.tensor([[0,  1,  2,  3,  1,  2,  3,  0,  4,  5,  6,  7,  8,  9, 10, 11, 12, 13,
+                                    14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31,
+                                    32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49,
+                                    50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60],
+                                   [1,  2,  3,  0,  0,  1,  2,  3,  4,  6,  5,  8,  7, 10,  9, 12, 11, 14,
+                                    13, 16, 15, 18, 17, 20, 19, 22, 21, 24, 23, 26, 25, 28, 27, 30, 29, 32,
+                                    31, 34, 33, 36, 35, 38, 37, 40, 39, 42, 41, 44, 43, 46, 45, 48, 47, 50,
+                                    49, 52, 51, 54, 53, 56, 55, 58, 57, 60, 59]], dtype=torch.int32)
+        # edge_index = torch.arange(num_edges, dtype=torch.int32).unsqueeze(0).repeat(2, 1)
+        # edge_index = edge_index[None, None, :, :]
+        valid_len = torch.tensor([29], dtype=torch.int32) 
+        # valid_len = valid_len[None, None, None, :]      
+        time_step_len = torch.tensor([51], dtype=torch.int32)
+        # time_step_len = time_step_len[None, None, None, :]       
         target_point = torch.rand(batch_size, 3)
         start_token = [self.BOS_token]
         gt_traj_point_token = torch.randint(1, 30, (batch_size,30))
+        x.numpy().tofile("x_input.bin")
+        cluster.numpy().tofile("cluster_input.bin")
+        edge_index.numpy().tofile("edge_index_input.bin")
+        valid_len.numpy().tofile("valid_len_input.bin")
+        time_step_len.numpy().tofile("time_step_len_input.bin")
 
 
 
@@ -363,15 +481,14 @@ class ParkingInferenceModuleReal:
 
         torch.onnx.export(
             encoder_wrapper,                     # 模型
-            (x, y, cluster, edge_index, valid_len, time_step_len),                      # 示例输入
+            (x, cluster, edge_index, valid_len, time_step_len),                      # 示例输入
             export_path_EncoderONNXWrapper,                    # 导出路径
             export_params=True,                  # 保存权重参数
             opset_version=11,                    # ONNX opset版本
             do_constant_folding=True,            # 常量折叠优化
-            input_names=["x", "y", "cluster", "edge_index", "valid_len", "time_step_len"],
+            input_names=["x", "cluster", "edge_index", "valid_len", "time_step_len"],
             output_names=["global_feat"],
-            dynamic_axes={
-            }
+            dynamic_axes=None
         )
         print(f"✅ ONNX 模型已导出到: {export_path_EncoderONNXWrapper}")
 
@@ -412,9 +529,6 @@ class ParkingInferenceModuleReal:
             input_names=["encoder_out", "point_out", "gt_traj_point_token"],
             output_names=["pred_traj_point"],
             dynamic_axes={
-                "encoder_out": {0: "batch_size"},
-                "point_out": {0: "batch_size"},
-                "pred_traj_point": {0: "batch_size"},
             }
         )
         print(f"✅ ONNX 模型已导出到: {export_path_DecoderONNXWrapper}")
