@@ -35,27 +35,27 @@ class EncoderONNXWrapper(torch.nn.Module):
             t.to(torch.int64) if t.dtype == torch.int32 else t
             for t in [x, cluster, edge_index, valid_len, time_step_len]
         ]
-        # x_new = x.squeeze(0)
-        # x_new = x_new.squeeze(0)
-        # edge_index_new = edge_index.squeeze(0)
-        # edge_index_new = edge_index_new.squeeze(0)
-        # cluster_new = cluster.reshape(-1)
-        # valid_len_new = valid_len.reshape(-1)
-        # time_step_new = time_step_len.reshape(-1)
-        # dummy_input = Data(
-        #     x = x_new,
-        #     cluster = cluster_new,
-        #     edge_index = edge_index_new,
-        #     valid_len= valid_len_new,
-        #     time_step_len = time_step_new
-        # )
+        x_new = x.squeeze(0)
+        x_new = x_new.squeeze(0)
+        edge_index_new = edge_index.squeeze(0)
+        edge_index_new = edge_index_new.squeeze(0)
+        cluster_new = cluster.reshape(-1)
+        valid_len_new = valid_len.reshape(-1)
+        time_step_new = time_step_len.reshape(-1)
         dummy_input = Data(
-            x = x,
-            cluster = cluster,
-            edge_index = edge_index,
-            valid_len= valid_len,
-            time_step_len = time_step_len
+            x = x_new,
+            cluster = cluster_new,
+            edge_index = edge_index_new,
+            valid_len= valid_len_new,
+            time_step_len = time_step_new
         )
+        # dummy_input = Data(
+        #     x = x,
+        #     cluster = cluster,
+        #     edge_index = edge_index,
+        #     valid_len= valid_len,
+        #     time_step_len = time_step_len
+        # )
         dummy_input.to(self.device)
         time_step_len =dummy_input["time_step_len"][0]
         valid_lens = dummy_input["valid_len"]
@@ -421,13 +421,13 @@ class ParkingInferenceModuleReal:
         26, 27, 27, 28, 28, 29, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40,
         41, 42, 43, 44, 45, 46, 47, 48, 49, 50])
         # x = torch.cat([xyz, polyline_id.unsqueeze(1).float()], dim=1)
-        # x = x[None, None, :, :]
+        x = x[None, None, :, :]
         # cluster = torch.arange(num_nodes)
         # cluster = torch.cat([
         # torch.full((n,), i, dtype=torch.long, device=self.device)   # ✅ fill_value 是数字 i
         #     for i, n in enumerate(num_nodes)])
         cluster = polyline_id.to(torch.int32)
-        # cluster = cluster[None, None, None, :]
+        cluster = cluster[None, None, None, :]
         # cluster = polyline_id.to(torch.int32).squeeze(1)      # 聚类信息
         # edge_index = torch.randint(0, num_nodes, (2, num_edges), dtype=torch.int32)  # 边索引
         edge_index = torch.tensor([[0,  1,  2,  3,  1,  2,  3,  0,  4,  5,  6,  7,  8,  9, 10, 11, 12, 13,
@@ -439,11 +439,11 @@ class ParkingInferenceModuleReal:
                                     31, 34, 33, 36, 35, 38, 37, 40, 39, 42, 41, 44, 43, 46, 45, 48, 47, 50,
                                     49, 52, 51, 54, 53, 56, 55, 58, 57, 60, 59]], dtype=torch.int32)
         # edge_index = torch.arange(num_edges, dtype=torch.int32).unsqueeze(0).repeat(2, 1)
-        # edge_index = edge_index[None, None, :, :]
+        edge_index = edge_index[None, None, :, :]
         valid_len = torch.tensor([29], dtype=torch.int32) 
-        # valid_len = valid_len[None, None, None, :]      
+        valid_len = valid_len[None, None, None, :]      
         time_step_len = torch.tensor([51], dtype=torch.int32)
-        # time_step_len = time_step_len[None, None, None, :]       
+        time_step_len = time_step_len[None, None, None, :]       
         target_point = torch.rand(batch_size, 3)
         start_token = [self.BOS_token]
         gt_traj_point_token = torch.randint(1, 30, (batch_size,30))

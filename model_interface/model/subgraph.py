@@ -25,7 +25,7 @@ class MyGCNConv(nn.Module):
         out_channels,
         improved: bool = False,
         cached: bool = False,
-        add_self_loops: bool = True,
+        add_self_loops: bool = False,
         normalize: bool = True,
         bias: bool = True,
     ):
@@ -79,9 +79,29 @@ class MyGCNConv(nn.Module):
         x = x @ self.weight
 
         # === 消息传递 ===
-        row, col = edge_index
+        # row, col = edge_index
+        edge_index_split = edge_index.to(torch.float32)
+        row, col = edge_index_split
+        row = row.long()
+        col = col.long()
         out = torch.zeros_like(x)
-        out.index_add_(0, row, norm.unsqueeze(1) * x[col])
+        # out.index_add_(0, row, norm.unsqueeze(1) * x[col])
+        def index_add_manual(out, row, updates):
+            """
+            手动实现 out.index_add_(0, row, updates)
+
+            Args:
+                out: (N, F) 张量，存放累加结果
+                row: (E,) 长度索引张量，指明 updates 写入 out 的行
+                updates: (E, F) 张量，沿行累加到 out
+            Returns:
+                out: 累加后的张量
+            """
+            for i in range(row.size(0)):
+                out[row[i]] += updates[i]
+            return out
+        updates = norm.unsqueeze(1) * x[col]
+        out = index_add_manual(out, row, updates)
 
         # === 加偏置 ===
         if self.bias is not None:
@@ -114,12 +134,24 @@ class MyGCNConv(nn.Module):
             edge_weight = torch.cat([edge_weight, loop_val])
 
         # === 计算度矩阵 ===
-        row, col = edge_index
-        deg = torch.zeros(num_nodes, device=device).scatter_add_(0, row, edge_weight)
+        # row, col = edge_index
+        edge_index_split = edge_index.to(torch.float32)
+        row, col = edge_index_split
+        row = row.long()
+        col = col.long()
+        # deg = torch.zeros(num_nodes, device=device)
+        # for i in range(row.size(0)):
+        #     deg[row[i]] += edge_weight[i]
+        # deg = torch.zeros(num_nodes, device=device).scatter_add_(0, row.long(), edge_weight)
+        deg = torch.zeros(num_nodes, device=device)
+
+        for i in range(row.size(0)):
+            deg[row[i]] += edge_weight[i]
 
         # 防止度为0导致 inf
-        deg_inv_sqrt = deg.pow(-0.5)
-        deg_inv_sqrt[torch.isinf(deg_inv_sqrt)] = 0.0
+        # deg_inv_sqrt = deg.pow(-0.5)
+        # deg_inv_sqrt[torch.isinf(deg_inv_sqrt)] = 0.0
+        deg_inv_sqrt = deg.pow(-0.5) * (deg > 0).float()
 
         # === 归一化边权 ===
         norm = deg_inv_sqrt[row] * edge_weight * deg_inv_sqrt[col]
@@ -188,10 +220,10 @@ class SubGraph(nn.Module):
         """
         sub_data.cluster = sub_data.cluster.to(torch.int64)
         sub_data.edge_index = sub_data.edge_index.to(torch.int64)
-        sub_data.valid_len = sub_data.valid_len.to(torch.int32)
+        sub_data.valid_len = sub_data.valid_len.to(torch.int64)
         sub_data.time_step_len = sub_data.time_step_len.to(torch.int64)
         geo_feat = sub_data.x[:, :3]                     # 几何特征 (N,3)
-        id_index = sub_data.x[:, 3].to(torch.int32)               # id 列 (N,)
+        id_index = sub_data.x[:, 3].to(torch.int64)               # id 列 (N,)
         id_feat  = self.id_emb(id_index)             # (N, 8)
 
         # 拼接
@@ -219,11 +251,21 @@ class SubGraph(nn.Module):
 
         data.x = x
 
+        # num_clusters = data.cluster.max() + 1
+        # out = torch.zeros((num_clusters, data.x.size(1)), device=data.x.device)
+        # for i in range(num_clusters):
+        #     mask = (data.cluster == i)
+        #     out[i] = data.x[mask].max(dim=0)[0]
+#         num_nodes = data.x.size(0)
         num_clusters = data.cluster.max() + 1
-        out = torch.zeros((num_clusters, data.x.size(1)), device=data.x.device)
-        for i in range(num_clusters):
-            mask = (data.cluster == i)
-            out[i] = data.x[mask].max(dim=0)[0]
+        
+
+# 生成 one-hot: [N, num_clusters]
+        cluster_onehot = torch.nn.functional.one_hot(data.cluster.long(), num_clusters).float()
+
+# 由于 max 不能直接用 one-hot 乘法表示最大值，只能模拟 min/max 通过mask：
+        masked = data.x.unsqueeze(1) * cluster_onehot.unsqueeze(2)  # [N, num_clusters, F]
+        out = masked.max(dim=0)[0]  # [num_clusters, F]
         # norm_x = F.normalize(out_data.x, p=2, dim=0, eps=1e-6)
         # return norm_x
         return out

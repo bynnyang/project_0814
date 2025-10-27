@@ -92,9 +92,23 @@ class SimpleMultiheadAttention(nn.Module):
         # 注意力计算
         scores = torch.matmul(Q, K.transpose(-2, -1)) / (D ** 0.5)  # B, H, T, T
 
-        if key_padding_mask is not None:
+        if key_padding_mask is not None and key_padding_mask.size(-1) > 0:
             mask = key_padding_mask[:, None, None, :]  # B,1,1,T
-            scores = scores.masked_fill(mask, float('-inf'))
+            mask = mask.to(scores.dtype)  # [B,1,1,T]
+            scores = scores - mask * 1e9  # 用极大负数替代 -inf，避免 IsInf 节点
+
+        def safe_softmax(scores, dim=-1):
+    # 数值稳定的 softmax，不会产生 IsInf / NonZero 节点
+            scores = scores - scores.max(dim=dim, keepdim=True)[0]
+            exp_scores = torch.exp(scores)
+            exp_sum = exp_scores.sum(dim=dim, keepdim=True)
+            return exp_scores / (exp_sum + 1e-9)   # 避免除0
+
+        # attn = torch.softmax(scores, dim=-1)
+        attn = safe_softmax(scores, dim=-1)
+        # if key_padding_mask is not None:
+        #     mask = key_padding_mask[:, None, None, :]  # B,1,1,T
+        #     scores = scores.masked_fill(mask, float('-inf'))
 
         attn = torch.softmax(scores, dim=-1)
         out = torch.matmul(attn, V)  # B, H, T, D
@@ -115,8 +129,19 @@ class SelfAttentionLayer(nn.Module):
         self.norm = nn.LayerNorm(global_graph_width)
 
     def forward(self, x, valid_len):
+        if x.size(1) == 0:
+            return torch.zeros_like(x)
         x = self.lin(x)
-        mask = torch.arange(x.size(1), device=x.device)[None, :] > valid_len[:, None]
+        # mask = torch.arange(x.size(1), device=x.device)[None, :] > valid_len[:, None]
+        T = x.size(1)
+        mask = torch.arange(T, device=x.device).expand(valid_len.size(0), T)
+        mask = mask >= valid_len.unsqueeze(1)
+        mask = mask[:, None, None, :].to(torch.bool)
+        if mask.size(1) == 0:
+            # 避免空mask：造一个全False的掩码
+            mask = torch.zeros((x.size(0), 1), dtype=torch.bool, device=x.device)
+        # x = self.lin(x)
+        # mask = torch.arange(x.size(1), device=x.device)[None, :] > valid_len[:, None]
         out= self.mha(x, key_padding_mask=mask)
         return out + x   # 残差 + LayerNorm
     
