@@ -518,7 +518,7 @@ class ParkingInferenceModuleReal:
 
         dummy_encoder_out = torch.randn(batch_size, 1, self.cfg.train_meta_config.global_graph_width).to(device=self.device)
         dummy_point_out = torch.randn(1, self.cfg.train_meta_config.global_graph_width).to(device=self.device)
-        dummy_gt_token = torch.randint(0, self.cfg.train_meta_config.token_nums, (1, 60)).to(device=self.device)
+        dummy_gt_token = torch.randint(0, self.cfg.train_meta_config.token_nums, (1, 60)).to(device=self.device).to(torch.int32)
 
         torch.onnx.export(
             decoder_wrapper,

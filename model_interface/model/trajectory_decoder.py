@@ -474,7 +474,6 @@ class TrajectoryDecoderONNX(nn.Module):
         tgt_mask, tgt_padding_mask = self.create_mask(tgt)
         final_global_context = global_context.unsqueeze(1).repeat(1, tgt.size(1), 1)
 
-        tgt = tgt.to(torch.int32)
         tgt_embedding = self.embedding(tgt)
         tgt_embedding = tgt_embedding + final_global_context
         tgt_embedding = tgt_embedding + self.pos_embed[:, :tgt.size(1), :]

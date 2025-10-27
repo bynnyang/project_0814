@@ -121,17 +121,17 @@ class MyGCNConv(nn.Module):
             edge_weight = torch.ones(edge_index.size(1), device=device)
 
         # === 移除已有自环 ===
-        if add_self_loops:
-            mask = edge_index[0] != edge_index[1]
-            edge_index = edge_index[:, mask]
-            edge_weight = edge_weight[mask]
+        # if add_self_loops:
+        #     mask = edge_index[0] != edge_index[1]
+        #     edge_index = edge_index[:, mask]
+        #     edge_weight = edge_weight[mask]
 
-            # 添加自环
-            loop_index = torch.arange(num_nodes, device=device)
-            loop_index = loop_index.unsqueeze(0).repeat(2, 1)
-            loop_val = torch.full((num_nodes,), 2.0 if improved else 1.0, device=device)
-            edge_index = torch.cat([edge_index, loop_index], dim=1)
-            edge_weight = torch.cat([edge_weight, loop_val])
+        #     # 添加自环
+        #     loop_index = torch.arange(num_nodes, device=device)
+        #     loop_index = loop_index.unsqueeze(0).repeat(2, 1)
+        #     loop_val = torch.full((num_nodes,), 2.0 if improved else 1.0, device=device)
+        #     edge_index = torch.cat([edge_index, loop_index], dim=1)
+        #     edge_weight = torch.cat([edge_weight, loop_val])
 
         # === 计算度矩阵 ===
         # row, col = edge_index
@@ -223,7 +223,7 @@ class SubGraph(nn.Module):
         sub_data.valid_len = sub_data.valid_len.to(torch.int64)
         sub_data.time_step_len = sub_data.time_step_len.to(torch.int64)
         geo_feat = sub_data.x[:, :3]                     # 几何特征 (N,3)
-        id_index = sub_data.x[:, 3].to(torch.int64)               # id 列 (N,)
+        id_index = sub_data.x[:, 3].long()               # id 列 (N,)
         id_feat  = self.id_emb(id_index)             # (N, 8)
 
         # 拼接
