@@ -152,45 +152,6 @@ class TrajectoryDecoder(nn.Module):
 # ----------------------------
 # ONNX-friendly MultiheadAttention
 # ----------------------------
-class ONNXMultiheadAttention_Old(nn.Module):
-    def __init__(self, embed_dim, num_heads):
-        super().__init__()
-        assert embed_dim % num_heads == 0
-        self.num_heads = num_heads
-        self.head_dim = embed_dim // num_heads
-
-        self.q_proj = nn.Linear(embed_dim, embed_dim)
-        self.k_proj = nn.Linear(embed_dim, embed_dim)
-        self.v_proj = nn.Linear(embed_dim, embed_dim)
-        self.out_proj = nn.Linear(embed_dim, embed_dim)
-
-    def forward(self, x, key_padding_mask=None):
-        # x: B, T, C
-        B, T, C = x.size()
-        H = self.num_heads
-        D = self.head_dim
-
-        Q = self.q_proj(x)
-        K = self.k_proj(x)
-        V = self.v_proj(x)
-
-        # 手动 reshape绕过 aten::unflatten
-        Q = Q.view(B, T, H, D).transpose(1, 2)  # B, H, T, D
-        K = K.view(B, T, H, D).transpose(1, 2)
-        V = V.view(B, T, H, D).transpose(1, 2)
-
-        scores = torch.matmul(Q, K.transpose(-2, -1)) / (D ** 0.5)
-        if key_padding_mask is not None:
-            mask = key_padding_mask[:, None, None, :]  # B,1,1,T
-            scores = scores.masked_fill(mask, float('-inf'))
-
-        attn = torch.softmax(scores, dim=-1)
-        out = torch.matmul(attn, V)  # B, H, T, D
-
-        # 合并头
-        out = out.transpose(1, 2).contiguous().view(B, T, C)
-        out = self.out_proj(out)
-        return out
     
 class ONNXMultiheadAttention(nn.Module):
     def __init__(self, d_model, n_heads, dropout=0.1):
@@ -215,19 +176,38 @@ class ONNXMultiheadAttention(nn.Module):
          # K: (batch_size, n_heads, seq_len, d_k)
          # V: (batch_size, n_heads, seq_len, d_k)
 
-        scores = torch.matmul(Q, K.transpose(-2, -1)) / (self.d_k ** 0.5)  # (batch_size, n_heads, seq_len, seq_len)
-        if tgt_mask is not None:
-            # 如果是 2D mask（L, L），需要 broadcast 到 batch/n_heads
-            if tgt_mask.dim() == 2:
-                tgt_mask = tgt_mask[None, None,  :, :] 
-            scores = scores + tgt_mask.to(scores.device)
-        if tgt_key_padding_mask is not None:
-            mask = tgt_key_padding_mask[:, None, None, :]  # B,1,1,T
-            scores = scores.masked_fill(mask, float('-inf'))
+        # scores = torch.matmul(Q, K.transpose(-2, -1)) / (self.d_k ** 0.5)  # (batch_size, n_heads, seq_len, seq_len)
+        # if tgt_mask is not None:
+        #     # 如果是 2D mask（L, L），需要 broadcast 到 batch/n_heads
+        #     if tgt_mask.dim() == 2:
+        #         tgt_mask = tgt_mask[None, None,  :, :] 
+        #     scores = scores + tgt_mask.to(scores.device)
+        # if tgt_key_padding_mask is not None:
+        #     mask = tgt_key_padding_mask[:, None, None, :]  # B,1,1,T
+        #     scores = scores.masked_fill(mask, float('-inf'))
          
-        attn_weights = torch.softmax(scores, dim=-1)    # (batch_size, n_heads, seq_len, seq_len)
-        attn_weights = self.dropout(attn_weights)    # apply dropout to attention weights
-        output = torch.matmul(attn_weights, V)    # (batch_size, n_heads, seq_len, d_k)
+        # attn_weights = torch.softmax(scores, dim=-1)    # (batch_size, n_heads, seq_len, seq_len)
+        # attn_weights = self.dropout(attn_weights)    # apply dropout to attention weights
+        # output = torch.matmul(attn_weights, V)    # (batch_size, n_heads, seq_len, d_k)
+        # return output
+        LARGE_NEG = 1e9
+        scores = torch.matmul(Q, K.transpose(-2, -1)) / (self.d_k ** 0.5)
+
+        if tgt_mask is not None:
+            # ensure additive numeric mask
+            if tgt_mask.dim() == 2:
+                additive = tgt_mask[None, None, :, :].to(dtype=scores.dtype, device=scores.device)
+                scores = scores + additive
+            else:
+                scores = scores + tgt_mask.to(dtype=scores.dtype, device=scores.device)
+
+        if tgt_key_padding_mask is not None:
+            mask = tgt_key_padding_mask[:, None, None, :].to(dtype=scores.dtype, device=scores.device)
+            scores = scores - mask * LARGE_NEG
+
+        attn_weights = torch.softmax(scores, dim=-1)
+        attn_weights = self.dropout(attn_weights)
+        output = torch.matmul(attn_weights, V)
         return output
      
     def forward(self, Q, K, V, tgt_mask=None, tgt_key_padding_mask=None):
@@ -271,31 +251,7 @@ class ONNXFeedForward(nn.Module):
 # ----------------------------
 # ONNX-friendly Transformer Decoder Layer
 # ----------------------------
-class ONNXTransformerDecoderLayer_Old(nn.Module):
-    def __init__(self, d_model, num_heads, dim_feedforward=2048, dropout=0.1):
-        super().__init__()
-        self.self_attn = ONNXMultiheadAttention(d_model, num_heads)
-        self.linear1 = nn.Linear(d_model, dim_feedforward)
-        self.dropout = nn.Dropout(dropout)
-        self.linear2 = nn.Linear(dim_feedforward, d_model)
-        self.norm1 = nn.LayerNorm(d_model)
-        self.norm2 = nn.LayerNorm(d_model)
-        self.dropout1 = nn.Dropout(dropout)
-        self.dropout2 = nn.Dropout(dropout)
-        self.activation = nn.ReLU()
 
-    def forward(self, tgt, memory=None, tgt_mask=None, tgt_key_padding_mask=None):
-        # Self-attention
-        tgt2 = self.self_attn(tgt, key_padding_mask=tgt_key_padding_mask)
-        tgt = tgt + self.dropout1(tgt2)
-        tgt = self.norm1(tgt)
-
-        # Feedforward
-        tgt2 = self.linear2(self.dropout(self.activation(self.linear1(tgt))))
-        tgt = tgt + self.dropout2(tgt2)
-        tgt = self.norm2(tgt)
-        return tgt
-    
 class ONNXTransformerDecoderLayer(nn.Module):
     def __init__(self, d_model, n_heads, d_ff=2048, dropout=0.1):
         super().__init__()
@@ -317,16 +273,32 @@ class ONNXTransformerDecoderLayer(nn.Module):
         # tgt_mask: (batch_size, 1, 1, tgt_seq_len)
         # src_mask: (batch_size, 1, 1, src_seq_len)
 
+        # x = tgt
+        # output = self.self_attn(x, x, x, tgt_mask, tgt_key_padding_mask)    # (batch_size, tgt_seq_len, d_model)
+        # x = self.norm1(x + self.dropout1(output))    # add & norm
+
+        # output = self.cross_attn(x, src, src)    # (batch_size, seq_len, d_model)
+        # x = self.norm2(x + self.dropout2(output))    # add & norm
+
+        # output = self.ffn(x)    # (batch_size, seq_len, d_model)
+        # x = self.norm3(x + self.dropout3(output))    # add & norm
+        # return x    # (batch_size, seq_len, d_model)
+        # Ensure src (memory) not empty (avoid 0-len leading to -1 shape)
+        if src is None:
+            src = torch.zeros(tgt.size(0), 1, tgt.size(2), device=tgt.device, dtype=tgt.dtype)
+        elif src.size(1) == 0:
+            src = torch.zeros(src.size(0), 1, src.size(2), device=src.device, dtype=src.dtype)
+
         x = tgt
-        output = self.self_attn(x, x, x, tgt_mask, tgt_key_padding_mask)    # (batch_size, tgt_seq_len, d_model)
-        x = self.norm1(x + self.dropout1(output))    # add & norm
+        output = self.self_attn(x, x, x, tgt_mask, tgt_key_padding_mask)
+        x = self.norm1(x + self.dropout1(output))
 
-        output = self.cross_attn(x, src, src)    # (batch_size, seq_len, d_model)
-        x = self.norm2(x + self.dropout2(output))    # add & norm
+        output = self.cross_attn(x, src, src)
+        x = self.norm2(x + self.dropout2(output))
 
-        output = self.ffn(x)    # (batch_size, seq_len, d_model)
-        x = self.norm3(x + self.dropout3(output))    # add & norm
-        return x    # (batch_size, seq_len, d_model)
+        output = self.ffn(x)
+        x = self.norm3(x + self.dropout3(output))
+        return x
 
 
 # ----------------------------
@@ -384,17 +356,35 @@ class TrajectoryDecoderONNX(nn.Module):
             self.scheduled_sampling_ratio = max(self.scheduled_sampling_ratio, 0.01)
 
     def create_mask(self, tgt):
-        mask = (torch.arange(tgt.shape[1]).unsqueeze(1) >= torch.arange(tgt.shape[1]).unsqueeze(0)).float()
-        tgt_mask = mask.to(self.cfg.device)
-        # tgt_mask = (torch.triu(torch.ones((tgt.shape[1], tgt.shape[1]), device=self.cfg.device)) == 1).transpose(0, 1)
-        tgt_mask = tgt_mask.float().masked_fill(tgt_mask == 0, float('-inf')).masked_fill(tgt_mask == 1, float(0.0))
+        # mask = (torch.arange(tgt.shape[1]).unsqueeze(1) >= torch.arange(tgt.shape[1]).unsqueeze(0)).float()
+        # tgt_mask = mask.to(self.cfg.device)
+        # # tgt_mask = (torch.triu(torch.ones((tgt.shape[1], tgt.shape[1]), device=self.cfg.device)) == 1).transpose(0, 1)
+        # tgt_mask = tgt_mask.float().masked_fill(tgt_mask == 0, float('-inf')).masked_fill(tgt_mask == 1, float(0.0))
+        # tgt_padding_mask = (tgt == self.PAD_token)
+        # return tgt_mask, tgt_padding_mask
+        # ONNX-safe numeric additive mask
+        L = tgt.shape[1]
+        device = tgt.device
+        causal = (torch.arange(L, device=device).unsqueeze(1) >= torch.arange(L, device=device).unsqueeze(0)).float()
+        additive = causal.clone().to(dtype=torch.float32)
+        additive = additive.masked_fill(additive == 0, -1e9).masked_fill(additive == 1, 0.0)
+        tgt_mask = additive.unsqueeze(0).unsqueeze(0)  # (1,1,L,L)
         tgt_padding_mask = (tgt == self.PAD_token)
         return tgt_mask, tgt_padding_mask
+    
+    @staticmethod
+    def _ensure_nonempty_memory(mem):
+        if mem is None:
+            return None
+        if mem.size(1) == 0:
+            return torch.zeros(mem.size(0), 1, mem.size(2), device=mem.device, dtype=mem.dtype)
+        return mem
 
     def decoder(self, encoder_out, tgt_embedding, tgt_mask, tgt_padding_mask):
-        encoder_out = encoder_out  # memory 可以保留原形状
+        # encoder_out = encoder_out  # memory 可以保留原形状
+        encoder_out_safe = self._ensure_nonempty_memory(encoder_out)
         pred_traj_points = self.tf_decoder(tgt=tgt_embedding,
-                                           memory=encoder_out,
+                                           memory=encoder_out_safe,
                                            tgt_mask=tgt_mask,
                                            tgt_key_padding_mask=tgt_padding_mask)
         return pred_traj_points

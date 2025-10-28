@@ -87,33 +87,70 @@ class DecoderONNXWrapper(torch.nn.Module):
         return self.trajectory_decoder(encoder_out, point_out, gt_traj_point_token)
 
 class ParkingModelONNXWrapper(torch.nn.Module):
-    def __init__(self, model,cfg,device):
+    def __init__(self, model, cfg, device):
         super().__init__()
-        self.model = model
+        self.subgraph = model.subgraph
+        self.self_atten_layer = model.self_atten_layer
+        self.target_point_encoder = model.target_point_encoder
+        self.trajectory_decoder = model.trajectory_decoder
         self.cfg =cfg
         self.device = device
 
-    def forward(self, x, y, cluster, edge_index, valid_len, time_step_len, target_point, gt_traj_point_token):
-        # 手动组装成 torch_geometric.Data 结构
-        # x, y, cluster, edge_index, valid_len, time_step_len, target_point, gt_traj_point_token = [
-        #     t.to(torch.int32) if t.dtype == torch.int64 else t
-        #     for t in [x, y, cluster, edge_index, valid_len, time_step_len, target_point, gt_traj_point_token]
-        # ]
+    def forward(self, x, cluster, edge_index, valid_len, time_step_len, target_point, gt_traj_point_token):
+        x, cluster, edge_index, valid_len, time_step_len = [
+            t.to(torch.int64) if t.dtype == torch.int32 else t
+            for t in [x, cluster, edge_index, valid_len, time_step_len]
+        ]
+        x_new = x.squeeze(0)
+        x_new = x_new.squeeze(0)
+        edge_index_new = edge_index.squeeze(0)
+        edge_index_new = edge_index_new.squeeze(0)
+        cluster_new = cluster.reshape(-1)
+        valid_len_new = valid_len.reshape(-1)
+        time_step_new = time_step_len.reshape(-1)
         dummy_input = Data(
-            x = x,
-            y = y,
-            cluster = cluster,
-            edge_index = edge_index,
-            valid_len= valid_len,
-            time_step_len = time_step_len
+            x = x_new,
+            cluster = cluster_new,
+            edge_index = edge_index_new,
+            valid_len= valid_len_new,
+            time_step_len = time_step_new
         )
-        dummy_input.target_point = target_point
-        dummy_input.gt_traj_point_token = gt_traj_point_token
+        target_point_new = target_point.squeeze(0)
+        target_point_new = target_point_new.squeeze(0)
+        gt_traj_point_token_new = gt_traj_point_token.squeeze(0)
+        gt_traj_point_token_new = gt_traj_point_token_new.squeeze(0)
+        dummy_input.target_point = target_point_new
+        dummy_input.gt_traj_point_token = gt_traj_point_token_new
         dummy_input.to(self.device)
+        time_step_len =dummy_input["time_step_len"][0]
+        valid_lens = dummy_input["valid_len"]
+        sub_graph_out = self.subgraph(dummy_input)
+        x = sub_graph_out.view(-1, time_step_len, self.cfg.subgraph_width)
+        out = self.self_atten_layer(x, valid_lens)
+        point_out = self.target_point_encoder(dummy_input["target_point"].to(self.cfg.device))
+        # Auto Regressive Decoder
+        autoregressive_point = dummy_input['gt_traj_point_token'].to(self.cfg.device) # During inference, we regard BOS as gt_traj_point_token.
+        predict_token_num=self.cfg.item_number*self.cfg.autoregressive_points
+        for _ in range(predict_token_num):
+            pred_traj_point = self.trajectory_decoder.predict(out, point_out, autoregressive_point)
+            autoregressive_point = torch.cat([autoregressive_point, pred_traj_point], dim=1)
+        pred_traj_point_update = autoregressive_point[0][1:]
+        pred_traj_point_update = self.remove_invalid_content(pred_traj_point_update)
 
-        # 包装成 Batch
-        # batch_data = Batch.from_data_list([data])
-        return self.model(dummy_input, None)
+        delta_predicts = detokenize_traj_point(pred_traj_point_update, self.cfg.token_nums, 
+                                            self.cfg.item_number, 
+                                            self.cfg.xy_max)
+        return delta_predicts
+    
+    def remove_invalid_content(self, pred_traj_point_update):
+        finish_index = -1
+        index_tensor = torch.where(pred_traj_point_update == self.cfg.token_nums + self.cfg.append_token - 2)[0]
+        if len(index_tensor):
+            finish_index = torch.where(pred_traj_point_update == self.EOS_token)[0][0].item()
+            finish_index = finish_index - finish_index % self.cfg.item_number
+        if finish_index != -1:
+            pred_traj_point_update = pred_traj_point_update[: finish_index]
+        return pred_traj_point_update
 
 
 class ParkingInferenceModuleReal:
@@ -326,6 +363,11 @@ class ParkingInferenceModuleReal:
         
         export_path_EncoderONNXWrapper = os.path.join(export_dir, f"EncoderONNXWrapper_{date}.onnx")
 
+        allcoder_wrapper = ParkingModelONNXWrapper(self.model_onnx, self.cfg.train_meta_config, self.device).eval()
+        allcoder_wrapper = allcoder_wrapper.to(device=self.device)
+        
+        export_path_AllcoderONNXWrapper = os.path.join(export_dir, f"AllcoderONNXWrapper_{date}.onnx")
+
         num_nodes = 82         # 假设总节点数
         num_edges = 4
         batch_size= 1
@@ -444,14 +486,18 @@ class ParkingInferenceModuleReal:
         valid_len = valid_len[None, None, None, :]      
         time_step_len = torch.tensor([51], dtype=torch.int32)
         time_step_len = time_step_len[None, None, None, :]       
-        target_point = torch.rand(batch_size, 3)
         start_token = [self.BOS_token]
-        gt_traj_point_token = torch.randint(1, 30, (batch_size,30))
+        target_point = torch.randn(1, 3)
+        target_point = target_point[None, None, :, :]
+        gt_traj_point_token = torch.tensor([start_token]).to(torch.int32)
+        gt_traj_point_token = gt_traj_point_token[None, None, :, :]
         x.numpy().tofile("x_input.bin")
         cluster.numpy().tofile("cluster_input.bin")
         edge_index.numpy().tofile("edge_index_input.bin")
         valid_len.numpy().tofile("valid_len_input.bin")
         time_step_len.numpy().tofile("time_step_len_input.bin")
+        target_point.numpy().tofile("target_point_input.bin")
+        gt_traj_point_token.numpy().tofile("gt_traj_point_token_input.bin")
 
 
 
@@ -478,6 +524,19 @@ class ParkingInferenceModuleReal:
         #     },
         #     verbose=True
         # )
+
+        torch.onnx.export(
+            allcoder_wrapper,                     # 模型
+            (x, cluster, edge_index, valid_len, time_step_len, target_point, gt_traj_point_token),                      # 示例输入
+            export_path_AllcoderONNXWrapper,                    # 导出路径
+            export_params=True,                  # 保存权重参数
+            opset_version=11,                    # ONNX opset版本
+            do_constant_folding=True,            # 常量折叠优化
+            input_names=["x", "cluster", "edge_index", "valid_len", "time_step_len", "target_point", "gt_traj_point_token"],
+            output_names=["pred_traj_point"],
+            dynamic_axes=None
+        )
+        print(f"✅ ONNX 模型已导出到: {export_path_EncoderONNXWrapper}")
 
         torch.onnx.export(
             encoder_wrapper,                     # 模型
