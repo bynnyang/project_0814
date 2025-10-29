@@ -410,11 +410,24 @@ def inference(inference_cfg: InferenceConfiguration, parking_inference_model:Par
         pad_matrix[:, -1] = np.arange(tup[-2].max() + 1, padd_to_index + 1)
         tup[0] = np.vstack([tup[0], pad_matrix])
         tup[-2] = np.hstack([tup[2], np.arange(tup[-2].max()+1, padd_to_index+1)])
+        # ========== 在这里添加自环 ==========
+        edge_index_np = tup[3]
+        num_nodes = tup[0].shape[0]
+
+        # 移除已有的自环（如果有）
+        mask = edge_index_np[0] != edge_index_np[1]
+        edge_index_np = edge_index_np[:, mask]
+        # 构造自环
+        loop_index = np.arange(num_nodes, dtype=np.int64)
+        loop_index = np.stack([loop_index, loop_index], axis=0)  # shape=(2, num_nodes)
+
+            # 拼接到原有边集合
+        edge_index_np = np.hstack([edge_index_np, loop_index])
         g_data = GraphData(
             x=torch.from_numpy(tup[0]),
             y=torch.from_numpy(tup[1]),
             cluster=torch.from_numpy(tup[2]),
-            edge_index=torch.from_numpy(tup[3]),
+            edge_index=torch.from_numpy(edge_index_np),
             valid_len=torch.tensor([valid_len_ls[ind]]),
             time_step_len=torch.tensor([padd_to_index + 1])
             # time_step_len=torch.tensor([valid_len_ls[ind] + 1])
