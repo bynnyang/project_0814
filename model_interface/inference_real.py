@@ -30,39 +30,50 @@ class EncoderONNXWrapper(torch.nn.Module):
         self.cfg = cfg
         self.device = device
 
-    def forward(self, x, cluster, edge_index, valid_len, time_step_len):
-        x, cluster, edge_index, valid_len, time_step_len = [
+    def forward(self, x, cluster, edge_index, valid_len):
+        x, cluster, edge_index, valid_len = [
             t.to(torch.int64) if t.dtype == torch.int32 else t
-            for t in [x, cluster, edge_index, valid_len, time_step_len]
+            for t in [x, cluster, edge_index, valid_len]
         ]
         x_new = x.squeeze(0)
         x_new = x_new.squeeze(0)
         edge_index_new = edge_index.squeeze(0)
         edge_index_new = edge_index_new.squeeze(0)
-        cluster_new = cluster.reshape(-1)
-        valid_len_new = valid_len.reshape(-1)
-        time_step_new = time_step_len.reshape(-1)
+        cluster_new = cluster.contiguous().view(-1)
+        valid_len_new = valid_len.contiguous().view(-1)
         dummy_input = Data(
             x = x_new,
             cluster = cluster_new,
             edge_index = edge_index_new,
             valid_len= valid_len_new,
-            time_step_len = time_step_new
         )
         # dummy_input = Data(
         #     x = x,
         #     cluster = cluster,
         #     edge_index = edge_index,
         #     valid_len= valid_len,
-        #     time_step_len = time_step_len
         # )
-        dummy_input.to(self.device)
-        time_step_len =dummy_input["time_step_len"][0]
+        dummy_input = dummy_input.to(self.device)
         valid_lens = dummy_input["valid_len"]
         sub_graph_out = self.subgraph(dummy_input)
-        x = sub_graph_out.view(-1, time_step_len, self.cfg.subgraph_width)
-        out = self.self_atten_layer(x, valid_lens)
-        return out  # encoder输出 global_feat
+        x = sub_graph_out.view(1, 1, 51, self.cfg.subgraph_width)
+        # out = self.self_atten_layer(x, valid_lens)
+        return x  # encoder输出 global_feat
+    
+
+class SelfAttentionONNXWrapper(torch.nn.Module):
+    def __init__(self, model, cfg, device):
+        super().__init__()
+        self.self_atten_layer = model.self_atten_layer
+        self.cfg = cfg
+        self.device = device
+
+    def forward(self, graph_out, valid_lens):
+        valid_len_new = valid_lens.contiguous().view(-1)
+        valid_len_new = valid_len_new.to(self.device)
+        graph_out = graph_out.to(self.device)
+        out = self.self_atten_layer(graph_out, valid_len_new)
+        return out 
     
 
 # ========== 2. TrajInputEmbedding部分 ==========
@@ -95,11 +106,12 @@ class ParkingModelONNXWrapper(torch.nn.Module):
         self.trajectory_decoder = model.trajectory_decoder
         self.cfg =cfg
         self.device = device
+        self.EOS_token = self.cfg.token_nums + self.cfg.append_token - 2
 
-    def forward(self, x, cluster, edge_index, valid_len, time_step_len, target_point, gt_traj_point_token):
-        x, cluster, edge_index, valid_len, time_step_len = [
+    def forward(self, x, cluster, edge_index, valid_len, target_point, gt_traj_point_token):
+        x, cluster, edge_index, valid_len = [
             t.to(torch.int64) if t.dtype == torch.int32 else t
-            for t in [x, cluster, edge_index, valid_len, time_step_len]
+            for t in [x, cluster, edge_index, valid_len]
         ]
         x_new = x.squeeze(0)
         x_new = x_new.squeeze(0)
@@ -107,13 +119,11 @@ class ParkingModelONNXWrapper(torch.nn.Module):
         edge_index_new = edge_index_new.squeeze(0)
         cluster_new = cluster.reshape(-1)
         valid_len_new = valid_len.reshape(-1)
-        time_step_new = time_step_len.reshape(-1)
         dummy_input = Data(
             x = x_new,
             cluster = cluster_new,
             edge_index = edge_index_new,
-            valid_len= valid_len_new,
-            time_step_len = time_step_new
+            valid_len= valid_len_new
         )
         target_point_new = target_point.squeeze(0)
         target_point_new = target_point_new.squeeze(0)
@@ -122,10 +132,9 @@ class ParkingModelONNXWrapper(torch.nn.Module):
         dummy_input.target_point = target_point_new
         dummy_input.gt_traj_point_token = gt_traj_point_token_new
         dummy_input.to(self.device)
-        time_step_len =dummy_input["time_step_len"][0]
         valid_lens = dummy_input["valid_len"]
         sub_graph_out = self.subgraph(dummy_input)
-        x = sub_graph_out.view(-1, time_step_len, self.cfg.subgraph_width)
+        x = sub_graph_out.view(1, 51, self.cfg.subgraph_width)
         out = self.self_atten_layer(x, valid_lens)
         point_out = self.target_point_encoder(dummy_input["target_point"].to(self.cfg.device))
         # Auto Regressive Decoder
@@ -363,6 +372,11 @@ class ParkingInferenceModuleReal:
         
         export_path_EncoderONNXWrapper = os.path.join(export_dir, f"EncoderONNXWrapper_{date}.onnx")
 
+        selfatten_wrapper = SelfAttentionONNXWrapper(self.model_onnx, self.cfg.train_meta_config, self.device).eval()
+        selfatten_wrapper = selfatten_wrapper.to(device=self.device)
+        
+        export_path_SelfAttentionONNXWrapper = os.path.join(export_dir, f"SelfAttentionONNXWrapper_{date}.onnx")
+
         allcoder_wrapper = ParkingModelONNXWrapper(self.model_onnx, self.cfg.train_meta_config, self.device).eval()
         allcoder_wrapper = allcoder_wrapper.to(device=self.device)
         
@@ -375,93 +389,159 @@ class ParkingInferenceModuleReal:
         # polyline_id = torch.arange(num_nodes).unsqueeze(1).float()  # [0, 1, 2, ..., num_nodes-1]
         # x = torch.cat([xyz, polyline_id], dim=1)
         # y = torch.randn(batch_size)
-        x = torch.tensor([[0.5103,  0.5121,  0.5000,  0.0000],
-                          [0.4554,  0.5122,  0.5000,  0.0000],
-                          [0.4553,  0.3777,  0.5000,  0.0000],
-                          [0.5102,  0.3776,  0.5000,  0.0000],
-                          [0.4702,  0.4856,  0.4995,  1.0000],
-                          [0.7858,  0.2795,  0.2488,  2.0000],
-                          [0.7855,  0.2357,  0.2488,  2.0000],
-                          [0.7812,  0.5448,  0.5777,  3.0000],
-                          [0.7903,  0.5502,  0.5777,  3.0000],
-                          [0.7903,  0.5502,  0.5417,  4.0000],
-                          [0.8028,  0.5539,  0.5417,  4.0000],
-                          [0.7820,  0.5535,  0.4456,  5.0000],
-                          [0.7903,  0.5502,  0.4456,  5.0000],
-                          [0.8028,  0.5539,  0.5548,  6.0000],
-                          [0.8142,  0.5584,  0.5548,  6.0000],
-                          [0.5847,  0.5876,  0.7494,  7.0000],
-                          [0.5847,  0.5941,  0.7494,  7.0000],
-                          [0.5766,  0.5625,  0.6929,  8.0000],
-                          [0.5842,  0.5850,  0.6929,  8.0000],
-                          [0.5961,  0.3259,  0.4015,  9.0000],
-                          [0.6011,  0.3220,  0.4015,  9.0000],
-                          [0.5621,  0.5270,  0.4944, 10.0000],
-                          [0.5648,  0.5269,  0.4944, 10.0000],
-                          [0.5376,  0.5269,  0.5008, 11.0000],
-                          [0.5590,  0.5270,  0.5008, 11.0000],
-                          [0.4744,  0.5663,  0.4990, 12.0000],
-                          [0.5240,  0.5659,  0.4990, 12.0000],
-                          [0.5622,  0.2818,  0.2476, 13.0000],
-                          [0.5617,  0.2452,  0.2476, 13.0000],
-                          [0.5795,  0.3522,  0.3585, 14.0000],
-                          [0.5872,  0.3417,  0.3585, 14.0000],
-                          [0.5882,  0.3117,  0.1861, 15.0000],
-                          [0.5853,  0.3043,  0.1861, 15.0000],
-                          [0.5897,  0.3148,  0.7666, 16.0000],
-                          [0.5875,  0.3387,  0.7666, 16.0000],
-                          [0.7806,  0.5323,  0.2465, 17.0000],
-                          [0.7804,  0.5217,  0.2465, 17.0000],
-                          [0.5840,  0.3031,  0.1484, 18.0000],
-                          [0.5761,  0.2914,  0.1484, 18.0000],
-                          [0.5016,  0.3506,  0.5070, 19.0000],
-                          [0.5157,  0.3513,  0.5070, 19.0000],
-                          [0.8940,  0.5448,  0.4987, 20.0000],
-                          [0.9473,  0.5443,  0.4987, 20.0000],
-                          [0.5357,  0.2725,  0.4975, 21.0000],
-                          [0.5636,  0.2720,  0.4975, 21.0000],
-                          [0.5636,  0.2720,  0.2475, 22.0000],
-                          [0.5632,  0.2461,  0.2475, 22.0000],
-                          [0.5632,  0.2461,  0.9975, 23.0000],
-                          [0.5353,  0.2466,  0.9975, 23.0000],
-                          [0.5353,  0.2466,  0.7475, 24.0000],
-                          [0.5357,  0.2725,  0.7475, 24.0000],
-                          [0.8114,  0.2425,  0.9965, 25.0000],
-                          [0.7861,  0.2431,  0.9965, 25.0000],
-                          [0.7861,  0.2431,  0.7465, 26.0000],
-                          [0.7867,  0.2690,  0.7465, 26.0000],
-                          [0.7867,  0.2690,  0.4965, 27.0000],
-                          [0.8119,  0.2684,  0.4965, 27.0000],
-                          [0.8119,  0.2684,  0.2465, 28.0000],
-                          [0.8114,  0.2425,  0.2465, 28.0000],
-                          [0.4343,  0.5193,  0.2459, 29.0000],
-                          [0.4328,  0.4519,  0.2459, 29.0000],
-                          [0.4828,  0.4855,  0.5000, 30.0000],
-                          [0.4828,  0.4855,  0.5000, 31.0000],
-                          [0.4828,  0.4855,  0.5000, 32.0000],
-                          [0.4828,  0.4855,  0.5000, 33.0000],
-                          [0.4828,  0.4855,  0.5000, 34.0000],
-                          [0.4828,  0.4855,  0.5000, 35.0000],
-                          [0.4828,  0.4855,  0.5000, 36.0000],
-                          [0.4828,  0.4855,  0.5000, 37.0000],
-                          [0.4828,  0.4855,  0.5000, 38.0000],
-                          [0.4828,  0.4855,  0.5000, 39.0000],
-                          [0.4828,  0.4855,  0.5000, 40.0000],
-                          [0.4828,  0.4855,  0.5000, 41.0000],
-                          [0.4828,  0.4855,  0.5000, 42.0000],
-                          [0.4828,  0.4855,  0.5000, 43.0000],
-                          [0.4828,  0.4855,  0.5000, 44.0000],
-                          [0.4828,  0.4855,  0.5000, 45.0000],
-                          [0.4828,  0.4855,  0.5000, 46.0000],
-                          [0.4828,  0.4855,  0.5000, 47.0000],
-                          [0.4828,  0.4855,  0.5000, 48.0000],
-                          [0.4828,  0.4855,  0.5000, 49.0000],
-                          [0.4828,  0.4855,  0.5000, 50.0000]], dtype=torch.float32)
-        polyline_id = torch.tensor([ 0,  0,  0,  0,  1,  2,  2,  3,  3,  4,  4,  5,  5,  6,  6,  7,  7,  8,
-         8,  9,  9, 10, 10, 11, 11, 12, 12, 13, 13, 14, 14, 15, 15, 16, 16, 17,
-        17, 18, 18, 19, 19, 20, 20, 21, 21, 22, 22, 23, 23, 24, 24, 25, 25, 26,
-        26, 27, 27, 28, 28, 29, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40,
-        41, 42, 43, 44, 45, 46, 47, 48, 49, 50])
+        # x = torch.tensor([[0.5103,  0.5121,  0.5000,  0.0000],
+        #                   [0.4554,  0.5122,  0.5000,  0.0000],
+        #                   [0.4553,  0.3777,  0.5000,  0.0000],
+        #                   [0.5102,  0.3776,  0.5000,  0.0000],
+        #                   [0.4702,  0.4856,  0.4995,  1.0000],
+        #                   [0.7858,  0.2795,  0.2488,  2.0000],
+        #                   [0.7855,  0.2357,  0.2488,  2.0000],
+        #                   [0.7812,  0.5448,  0.5777,  3.0000],
+        #                   [0.7903,  0.5502,  0.5777,  3.0000],
+        #                   [0.7903,  0.5502,  0.5417,  4.0000],
+        #                   [0.8028,  0.5539,  0.5417,  4.0000],
+        #                   [0.7820,  0.5535,  0.4456,  5.0000],
+        #                   [0.7903,  0.5502,  0.4456,  5.0000],
+        #                   [0.8028,  0.5539,  0.5548,  6.0000],
+        #                   [0.8142,  0.5584,  0.5548,  6.0000],
+        #                   [0.5847,  0.5876,  0.7494,  7.0000],
+        #                   [0.5847,  0.5941,  0.7494,  7.0000],
+        #                   [0.5766,  0.5625,  0.6929,  8.0000],
+        #                   [0.5842,  0.5850,  0.6929,  8.0000],
+        #                   [0.5961,  0.3259,  0.4015,  9.0000],
+        #                   [0.6011,  0.3220,  0.4015,  9.0000],
+        #                   [0.5621,  0.5270,  0.4944, 10.0000],
+        #                   [0.5648,  0.5269,  0.4944, 10.0000],
+        #                   [0.5376,  0.5269,  0.5008, 11.0000],
+        #                   [0.5590,  0.5270,  0.5008, 11.0000],
+        #                   [0.4744,  0.5663,  0.4990, 12.0000],
+        #                   [0.5240,  0.5659,  0.4990, 12.0000],
+        #                   [0.5622,  0.2818,  0.2476, 13.0000],
+        #                   [0.5617,  0.2452,  0.2476, 13.0000],
+        #                   [0.5795,  0.3522,  0.3585, 14.0000],
+        #                   [0.5872,  0.3417,  0.3585, 14.0000],
+        #                   [0.5882,  0.3117,  0.1861, 15.0000],
+        #                   [0.5853,  0.3043,  0.1861, 15.0000],
+        #                   [0.5897,  0.3148,  0.7666, 16.0000],
+        #                   [0.5875,  0.3387,  0.7666, 16.0000],
+        #                   [0.7806,  0.5323,  0.2465, 17.0000],
+        #                   [0.7804,  0.5217,  0.2465, 17.0000],
+        #                   [0.5840,  0.3031,  0.1484, 18.0000],
+        #                   [0.5761,  0.2914,  0.1484, 18.0000],
+        #                   [0.5016,  0.3506,  0.5070, 19.0000],
+        #                   [0.5157,  0.3513,  0.5070, 19.0000],
+        #                   [0.8940,  0.5448,  0.4987, 20.0000],
+        #                   [0.9473,  0.5443,  0.4987, 20.0000],
+        #                   [0.5357,  0.2725,  0.4975, 21.0000],
+        #                   [0.5636,  0.2720,  0.4975, 21.0000],
+        #                   [0.5636,  0.2720,  0.2475, 22.0000],
+        #                   [0.5632,  0.2461,  0.2475, 22.0000],
+        #                   [0.5632,  0.2461,  0.9975, 23.0000],
+        #                   [0.5353,  0.2466,  0.9975, 23.0000],
+        #                   [0.5353,  0.2466,  0.7475, 24.0000],
+        #                   [0.5357,  0.2725,  0.7475, 24.0000],
+        #                   [0.8114,  0.2425,  0.9965, 25.0000],
+        #                   [0.7861,  0.2431,  0.9965, 25.0000],
+        #                   [0.7861,  0.2431,  0.7465, 26.0000],
+        #                   [0.7867,  0.2690,  0.7465, 26.0000],
+        #                   [0.7867,  0.2690,  0.4965, 27.0000],
+        #                   [0.8119,  0.2684,  0.4965, 27.0000],
+        #                   [0.8119,  0.2684,  0.2465, 28.0000],
+        #                   [0.8114,  0.2425,  0.2465, 28.0000],
+        #                   [0.4343,  0.5193,  0.2459, 29.0000],
+        #                   [0.4328,  0.4519,  0.2459, 29.0000],
+        #                   [0.4828,  0.4855,  0.5000, 30.0000],
+        #                   [0.4828,  0.4855,  0.5000, 31.0000],
+        #                   [0.4828,  0.4855,  0.5000, 32.0000],
+        #                   [0.4828,  0.4855,  0.5000, 33.0000],
+        #                   [0.4828,  0.4855,  0.5000, 34.0000],
+        #                   [0.4828,  0.4855,  0.5000, 35.0000],
+        #                   [0.4828,  0.4855,  0.5000, 36.0000],
+        #                   [0.4828,  0.4855,  0.5000, 37.0000],
+        #                   [0.4828,  0.4855,  0.5000, 38.0000],
+        #                   [0.4828,  0.4855,  0.5000, 39.0000],
+        #                   [0.4828,  0.4855,  0.5000, 40.0000],
+        #                   [0.4828,  0.4855,  0.5000, 41.0000],
+        #                   [0.4828,  0.4855,  0.5000, 42.0000],
+        #                   [0.4828,  0.4855,  0.5000, 43.0000],
+        #                   [0.4828,  0.4855,  0.5000, 44.0000],
+        #                   [0.4828,  0.4855,  0.5000, 45.0000],
+        #                   [0.4828,  0.4855,  0.5000, 46.0000],
+        #                   [0.4828,  0.4855,  0.5000, 47.0000],
+        #                   [0.4828,  0.4855,  0.5000, 48.0000],
+        #                   [0.4828,  0.4855,  0.5000, 49.0000],
+        #                   [0.4828,  0.4855,  0.5000, 50.0000]], dtype=torch.float32)
+        # polyline_id = torch.tensor([ 0,  0,  0,  0,  1,  2,  2,  3,  3,  4,  4,  5,  5,  6,  6,  7,  7,  8,
+        #  8,  9,  9, 10, 10, 11, 11, 12, 12, 13, 13, 14, 14, 15, 15, 16, 16, 17,
+        # 17, 18, 18, 19, 19, 20, 20, 21, 21, 22, 22, 23, 23, 24, 24, 25, 25, 26,
+        # 26, 27, 27, 28, 28, 29, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40,
+        # 41, 42, 43, 44, 45, 46, 47, 48, 49, 50])
+
+        polyline_id = torch.tensor([0,  0,  0,  0,  1,  2,  2,  3,  3,  4,  4,  5,  5,  6,  6,  7,  8,  9,
+        10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27,
+        28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45,
+        46, 47, 48, 49, 50])
+
+        x = torch.tensor([[ 0.5103,  0.5121,  0.5000,  0.0000],
+                [ 0.4554,  0.5122,  0.5000,  0.0000],
+                [ 0.4553,  0.3777,  0.5000,  0.0000],
+                [ 0.5102,  0.3776,  0.5000,  0.0000],
+                [ 0.3911,  0.4605,  0.5633,  1.0000],
+                [ 0.4579,  0.5443,  0.7492,  2.0000],
+                [ 0.4580,  0.5810,  0.7492,  2.0000],
+                [ 0.6566,  0.5050,  0.3175,  3.0000],
+                [ 0.7084,  0.3781,  0.3175,  3.0000],
+                [ 0.4518,  0.5918,  0.3451,  4.0000],
+                [ 0.4562,  0.5846,  0.3451,  4.0000],
+                [ 0.4608,  0.5679,  0.7830,  5.0000],
+                [ 0.4596,  0.5745,  0.7830,  5.0000],
+                [ 0.3427,  0.4780,  0.3129,  6.0000],
+                [ 0.3662,  0.4158,  0.3129,  6.0000],
+                [ 0.4828,  0.4855,  0.5000,  7.0000],
+                [ 0.4828,  0.4855,  0.5000,  8.0000],
+                [ 0.4828,  0.4855,  0.5000,  9.0000],
+                [ 0.4828,  0.4855,  0.5000, 10.0000],
+                [ 0.4828,  0.4855,  0.5000, 11.0000],
+                [ 0.4828,  0.4855,  0.5000, 12.0000],
+                [ 0.4828,  0.4855,  0.5000, 13.0000],
+                [ 0.4828,  0.4855,  0.5000, 14.0000],
+                [ 0.4828,  0.4855,  0.5000, 15.0000],
+                [ 0.4828,  0.4855,  0.5000, 16.0000],
+                [ 0.4828,  0.4855,  0.5000, 17.0000],
+                [ 0.4828,  0.4855,  0.5000, 18.0000],
+                [ 0.4828,  0.4855,  0.5000, 19.0000],
+                [ 0.4828,  0.4855,  0.5000, 20.0000],
+                [ 0.4828,  0.4855,  0.5000, 21.0000],
+                [ 0.4828,  0.4855,  0.5000, 22.0000],
+                [ 0.4828,  0.4855,  0.5000, 23.0000],
+                [ 0.4828,  0.4855,  0.5000, 24.0000],
+                [ 0.4828,  0.4855,  0.5000, 25.0000],
+                [ 0.4828,  0.4855,  0.5000, 26.0000],
+                [ 0.4828,  0.4855,  0.5000, 27.0000],
+                [ 0.4828,  0.4855,  0.5000, 28.0000],
+                [ 0.4828,  0.4855,  0.5000, 29.0000],
+                [ 0.4828,  0.4855,  0.5000, 30.0000],
+                [ 0.4828,  0.4855,  0.5000, 31.0000],
+                [ 0.4828,  0.4855,  0.5000, 32.0000],
+                [ 0.4828,  0.4855,  0.5000, 33.0000],
+                [ 0.4828,  0.4855,  0.5000, 34.0000],
+                [ 0.4828,  0.4855,  0.5000, 35.0000],
+                [ 0.4828,  0.4855,  0.5000, 36.0000],
+                [ 0.4828,  0.4855,  0.5000, 37.0000],
+                [ 0.4828,  0.4855,  0.5000, 38.0000],
+                [ 0.4828,  0.4855,  0.5000, 39.0000],
+                [ 0.4828,  0.4855,  0.5000, 40.0000],
+                [ 0.4828,  0.4855,  0.5000, 41.0000],
+                [ 0.4828,  0.4855,  0.5000, 42.0000],
+                [ 0.4828,  0.4855,  0.5000, 43.0000],
+                [ 0.4828,  0.4855,  0.5000, 44.0000],
+                [ 0.4828,  0.4855,  0.5000, 45.0000],
+                [ 0.4828,  0.4855,  0.5000, 46.0000],
+                [ 0.4828,  0.4855,  0.5000, 47.0000],
+                [ 0.4828,  0.4855,  0.5000, 48.0000],
+                [ 0.4828,  0.4855,  0.5000, 49.0000],
+                [ 0.4828,  0.4855,  0.5000, 50.0000]], dtype=torch.float32)
+
         # x = torch.cat([xyz, polyline_id.unsqueeze(1).float()], dim=1)
         x = x[None, None, :, :]
         # cluster = torch.arange(num_nodes)
@@ -472,17 +552,28 @@ class ParkingInferenceModuleReal:
         cluster = cluster[None, None, None, :]
         # cluster = polyline_id.to(torch.int32).squeeze(1)      # 聚类信息
         # edge_index = torch.randint(0, num_nodes, (2, num_edges), dtype=torch.int32)  # 边索引
-        edge_index = torch.tensor([[0,  1,  2,  3,  1,  2,  3,  0,  4,  5,  6,  7,  8,  9, 10, 11, 12, 13,
-                                    14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31,
-                                    32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49,
-                                    50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60],
-                                   [1,  2,  3,  0,  0,  1,  2,  3,  4,  6,  5,  8,  7, 10,  9, 12, 11, 14,
-                                    13, 16, 15, 18, 17, 20, 19, 22, 21, 24, 23, 26, 25, 28, 27, 30, 29, 32,
-                                    31, 34, 33, 36, 35, 38, 37, 40, 39, 42, 41, 44, 43, 46, 45, 48, 47, 50,
-                                    49, 52, 51, 54, 53, 56, 55, 58, 57, 60, 59]], dtype=torch.int32)
+        # edge_index = torch.tensor([[0,  1,  2,  3,  1,  2,  3,  0,  4,  5,  6,  7,  8,  9, 10, 11, 12, 13,
+        #                             14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31,
+        #                             32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49,
+        #                             50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60],
+        #                            [1,  2,  3,  0,  0,  1,  2,  3,  4,  6,  5,  8,  7, 10,  9, 12, 11, 14,
+        #                             13, 16, 15, 18, 17, 20, 19, 22, 21, 24, 23, 26, 25, 28, 27, 30, 29, 32,
+        #                             31, 34, 33, 36, 35, 38, 37, 40, 39, 42, 41, 44, 43, 46, 45, 48, 47, 50,
+        #                             49, 52, 51, 54, 53, 56, 55, 58, 57, 60, 59]], dtype=torch.int32)
+        edge_index = torch.tensor([[ 0,  1,  2,  3,  1,  2,  3,  0,  5,  6,  7,  8,  9, 10, 11, 12, 13, 14,
+          0,  1,  2,  3,  4,  5,  6,  7,  8,  9, 10, 11, 12, 13, 14, 15, 16, 17,
+         18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35,
+         36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53,
+         54, 55, 56, 57, 58],
+        [ 1,  2,  3,  0,  0,  1,  2,  3,  6,  5,  8,  7, 10,  9, 12, 11, 14, 13,
+          0,  1,  2,  3,  4,  5,  6,  7,  8,  9, 10, 11, 12, 13, 14, 15, 16, 17,
+         18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35,
+         36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53,
+         54, 55, 56, 57, 58]], dtype=torch.int32)
         # edge_index = torch.arange(num_edges, dtype=torch.int32).unsqueeze(0).repeat(2, 1)
         edge_index = edge_index[None, None, :, :]
-        valid_len = torch.tensor([29], dtype=torch.int32) 
+        # valid_len = torch.tensor([29], dtype=torch.int32)
+        valid_len = torch.tensor([6], dtype=torch.int32) 
         valid_len = valid_len[None, None, None, :]      
         time_step_len = torch.tensor([51], dtype=torch.int32)
         time_step_len = time_step_len[None, None, None, :]       
@@ -491,13 +582,13 @@ class ParkingInferenceModuleReal:
         target_point = target_point[None, None, :, :]
         gt_traj_point_token = torch.tensor([start_token]).to(torch.int32)
         gt_traj_point_token = gt_traj_point_token[None, None, :, :]
-        x.numpy().tofile("x_input.bin")
-        cluster.numpy().tofile("cluster_input.bin")
-        edge_index.numpy().tofile("edge_index_input.bin")
-        valid_len.numpy().tofile("valid_len_input.bin")
-        time_step_len.numpy().tofile("time_step_len_input.bin")
-        target_point.numpy().tofile("target_point_input.bin")
-        gt_traj_point_token.numpy().tofile("gt_traj_point_token_input.bin")
+        # x.numpy().tofile("x_input.bin")
+        # cluster.numpy().tofile("cluster_input.bin")
+        # edge_index.numpy().tofile("edge_index_input.bin")
+        # valid_len.numpy().tofile("valid_len_input.bin")
+        # time_step_len.numpy().tofile("time_step_len_input.bin")
+        # target_point.numpy().tofile("target_point_input.bin")
+        # gt_traj_point_token.numpy().tofile("gt_traj_point_token_input.bin")
 
 
 
@@ -525,31 +616,46 @@ class ParkingInferenceModuleReal:
         #     verbose=True
         # )
 
-        torch.onnx.export(
-            allcoder_wrapper,                     # 模型
-            (x, cluster, edge_index, valid_len, time_step_len, target_point, gt_traj_point_token),                      # 示例输入
-            export_path_AllcoderONNXWrapper,                    # 导出路径
-            export_params=True,                  # 保存权重参数
-            opset_version=11,                    # ONNX opset版本
-            do_constant_folding=True,            # 常量折叠优化
-            input_names=["x", "cluster", "edge_index", "valid_len", "time_step_len", "target_point", "gt_traj_point_token"],
-            output_names=["pred_traj_point"],
-            dynamic_axes=None
-        )
-        print(f"✅ ONNX 模型已导出到: {export_path_EncoderONNXWrapper}")
+        # torch.onnx.export(
+        #     allcoder_wrapper,                     # 模型
+        #     (x, cluster, edge_index, valid_len, target_point, gt_traj_point_token),                      # 示例输入
+        #     export_path_AllcoderONNXWrapper,                    # 导出路径
+        #     export_params=True,                  # 保存权重参数
+        #     opset_version=11,                    # ONNX opset版本
+        #     do_constant_folding=True,            # 常量折叠优化
+        #     input_names=["x", "cluster", "edge_index", "valid_len", "target_point", "gt_traj_point_token"],
+        #     output_names=["pred_traj_point"],
+        #     dynamic_axes=None
+        # )
+        # print(f"✅ ONNX 模型已导出到: {export_path_EncoderONNXWrapper}")
 
         torch.onnx.export(
             encoder_wrapper,                     # 模型
-            (x, cluster, edge_index, valid_len, time_step_len),                      # 示例输入
+            (x, cluster, edge_index, valid_len),                      # 示例输入
             export_path_EncoderONNXWrapper,                    # 导出路径
             export_params=True,                  # 保存权重参数
             opset_version=11,                    # ONNX opset版本
             do_constant_folding=True,            # 常量折叠优化
-            input_names=["x", "cluster", "edge_index", "valid_len", "time_step_len"],
+            input_names=["x", "cluster", "edge_index", "valid_len"],
             output_names=["global_feat"],
             dynamic_axes=None
         )
         print(f"✅ ONNX 模型已导出到: {export_path_EncoderONNXWrapper}")
+
+        graph_out = torch.randn(1, 51, self.cfg.train_meta_config.subgraph_width).to(device=self.device)
+
+        torch.onnx.export(
+            selfatten_wrapper,                     # 模型
+            (graph_out, valid_len),                      # 示例输入
+            export_path_SelfAttentionONNXWrapper,                    # 导出路径
+            export_params=True,                  # 保存权重参数
+            opset_version=11,                    # ONNX opset版本
+            do_constant_folding=True,            # 常量折叠优化
+            input_names=["graph_out", "valid_len"],
+            output_names=["encoder_out"],
+            dynamic_axes=None
+        )
+        print(f"✅ ONNX 模型已导出到: {export_path_SelfAttentionONNXWrapper}")
 
         traj_input_wrapper = TrajInputEmbeddingONNXWrapper(self.model_onnx).eval()
         traj_input_wrapper = traj_input_wrapper.to(device=self.device)

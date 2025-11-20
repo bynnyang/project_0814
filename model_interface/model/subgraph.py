@@ -221,7 +221,7 @@ class SubGraph(nn.Module):
         sub_data.cluster = sub_data.cluster.to(torch.int64)
         sub_data.edge_index = sub_data.edge_index.to(torch.int64)
         sub_data.valid_len = sub_data.valid_len.to(torch.int64)
-        sub_data.time_step_len = sub_data.time_step_len.to(torch.int64)
+        # sub_data.time_step_len = sub_data.time_step_len.to(torch.int64)
         geo_feat = sub_data.x[:, :3]                     # 几何特征 (N,3)
         id_index = sub_data.x[:, 3].long()               # id 列 (N,)
         id_feat  = self.id_emb(id_index)             # (N, 8)
@@ -261,7 +261,14 @@ class SubGraph(nn.Module):
         
 
 # 生成 one-hot: [N, num_clusters]
-        cluster_onehot = torch.nn.functional.one_hot(data.cluster.long(), num_clusters).float()
+        # cluster_onehot = torch.nn.functional.one_hot(data.cluster.long(), num_clusters).float()
+
+        cluster_onehot = torch.zeros(len(data.cluster), num_clusters, dtype=torch.float32, device = data.x.device)
+
+        # 用 for 循环逐个样本设 1
+        for i in range(len(data.cluster)):
+            class_index = data.cluster[i]
+            cluster_onehot[i, class_index] = 1.0
 
 # 由于 max 不能直接用 one-hot 乘法表示最大值，只能模拟 min/max 通过mask：
         masked = data.x.unsqueeze(1) * cluster_onehot.unsqueeze(2)  # [N, num_clusters, F]
