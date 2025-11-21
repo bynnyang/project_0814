@@ -15,7 +15,7 @@ check_val_every_n_epoch: 5
 epochs: 40
 learning_rate: 0.0001
 weight_decay: 0.00001
-batch_size: 1
+batch_size: 128
 num_workers: 8
 # resume_path: ""
 
@@ -59,6 +59,17 @@ tf_de_heads: 4
 tf_de_layers: 4
 tf_de_dropout: 0.005
 
+##################### CNN #####################
+
+img_shape: [3, 128, 128]
+embed_size: 128
+k_img_conv: 3
+img_conv_layers: [4, 8]
+img_linear_layers: [256]
+
+
+
+
 
 in_channels: 11
 num_subgraph_layers: 3
@@ -81,3 +92,5 @@ target_point_y_min: -7.363075256347656
 target_point_y_max: 0.05854923278093338
 target_point_theta_min: -0.07990014553070068
 target_point_theta_max: 1.6548668146133423
+
+

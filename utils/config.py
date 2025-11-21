@@ -99,6 +99,12 @@ class Configuration:
 
     max_id: int = None
 
+    img_shape: list = None
+    embed_size: int = None
+    k_img_conv: int = None
+    img_conv_layers: list = None
+    img_linear_layers: list = None
+
 
 
 @dataclass

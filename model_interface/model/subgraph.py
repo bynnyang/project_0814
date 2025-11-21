@@ -59,7 +59,7 @@ class MyGCNConv(nn.Module):
 
     def forward(self, x, edge_index, edge_weight=None):
         device = x.device
-        N = x.size(0)
+        # N = x.size(0)
 
         # === 归一化边权 ===
         if self.normalize:
@@ -67,13 +67,13 @@ class MyGCNConv(nn.Module):
                 edge_index, norm = self.cached_edge_index, self.cached_norm
             else:
                 edge_index, norm = self.gcn_norm(
-                    edge_index, edge_weight, N, self.improved, self.add_self_loops, device
+                    edge_index, edge_weight, 59, self.improved, self.add_self_loops, device
                 )
                 if self.cached:
                     self.cached_edge_index = edge_index
                     self.cached_norm = norm
         else:
-            norm = edge_weight if edge_weight is not None else torch.ones(edge_index.size(1), device=device)
+            norm = edge_weight if edge_weight is not None else torch.ones(77, device=device)
 
         # === 线性变换 ===
         x = x @ self.weight
@@ -97,7 +97,7 @@ class MyGCNConv(nn.Module):
             Returns:
                 out: 累加后的张量
             """
-            for i in range(row.size(0)):
+            for i in range(77):
                 out[row[i]] += updates[i]
             return out
         updates = norm.unsqueeze(1) * x[col]
@@ -118,7 +118,8 @@ class MyGCNConv(nn.Module):
         3. improved 只影响自环
         """
         if edge_weight is None:
-            edge_weight = torch.ones(edge_index.size(1), device=device)
+            # edge_weight = torch.ones(edge_index.size(1), device=device)
+            edge_weight = torch.ones(77, device=device)
 
         # === 移除已有自环 ===
         # if add_self_loops:
@@ -145,7 +146,7 @@ class MyGCNConv(nn.Module):
         # deg = torch.zeros(num_nodes, device=device).scatter_add_(0, row.long(), edge_weight)
         deg = torch.zeros(num_nodes, device=device)
 
-        for i in range(row.size(0)):
+        for i in range(77): # 77
             deg[row[i]] += edge_weight[i]
 
         # 防止度为0导致 inf

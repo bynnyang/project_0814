@@ -56,6 +56,18 @@ class TrajectoryInfoParser:
     def get_trajectory_point(self, point_index) -> CustomizePose:
         return self.trajectory_list[point_index]
     
+    def lerp_angle_degrees(slef, a_deg, b_deg, t):
+        """在度数空间处理环绕，再转回弧度"""
+        # 确保在 [-180, 180]
+        a_deg = ((a_deg + 180) % 360) - 180
+        b_deg = ((b_deg + 180) % 360) - 180
+        
+        # 计算最小差值
+        diff = ((b_deg - a_deg + 180) % 360) - 180
+        
+        # 插值并转换回弧度
+        result_deg = a_deg + diff * t
+        return result_deg
 
     def get_trajectory_point_by_s(self, edge_index, ds) -> CustomizePose:
         if ds == self.trajectory_list[edge_index].s :
@@ -76,13 +88,46 @@ class TrajectoryInfoParser:
 
         new_x = point_index_left.x + ratio * (point_index_right.x - point_index_left.x)
         new_y = point_index_left.y + ratio * (point_index_right.y - point_index_left.y)
-        new_yaw = point_index_left.yaw + ratio * (point_index_right.yaw - point_index_left.yaw)
+        # new_yaw = point_index_left.yaw + ratio * (point_index_right.yaw - point_index_left.yaw)
+        new_yaw = self.lerp_angle_degrees(point_index_left.yaw, point_index_right.yaw, ratio)
         new_s = point_index_left.s + ratio * (point_index_right.s - point_index_left.s)
 
         new_point = CustomizePose(new_x, new_y, 0, 0, new_yaw, 0, new_s)
 
 
         return new_point
+    
+    def get_trajectory_point_by_s_dec(self, edge_index, ds) -> CustomizePose:
+        if ds == self.trajectory_list[edge_index].s :
+            return self.trajectory_list[edge_index]
+        
+        if ds >= self.trajectory_list[-1].s:
+            return self.trajectory_list[-1]
+        
+        if ds <= 0:
+            return self.trajectory_list[0]
+        
+        lerp_index = 0
+        for index in range(edge_index, 1, -1):
+            if (ds >= self.trajectory_list[index-1].s) and (ds < self.trajectory_list[index].s):
+                lerp_index = index - 1
+                break
+        point_index_left =  self.trajectory_list[lerp_index]
+        point_index_right =  self.trajectory_list[lerp_index+1]
+
+        ratio = (ds - point_index_left.s) / max((point_index_right.s - point_index_left.s), 1e-6)
+
+        new_x = point_index_left.x + ratio * (point_index_right.x - point_index_left.x)
+        new_y = point_index_left.y + ratio * (point_index_right.y - point_index_left.y)
+        new_yaw = point_index_left.yaw + ratio * (point_index_right.yaw - point_index_left.yaw)
+        new_yaw = self.lerp_angle_degrees(point_index_left.yaw, point_index_right.yaw, ratio)
+        new_s = point_index_left.s + ratio * (point_index_right.s - point_index_left.s)
+
+        new_point = CustomizePose(new_x, new_y, 0, 0, new_yaw, 0, new_s)
+
+
+        return new_point
+
 
     def get_progress(self, index) -> float:
         return self.progress_list[index]

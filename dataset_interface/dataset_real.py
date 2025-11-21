@@ -8,10 +8,43 @@ import tqdm
 
 from utils.config import Configuration
 from utils.trajectory_utils import TrajectoryInfoParser, tokenize_traj_point
+from utils.cluster_utils import ClusterInfoParser
 from dataset import GraphData
 from dataset import GraphDataset
+from dataset_interface.bev_render import BevRender
+import copy
+# from dataset_interface.bev_render import BevRender
 import json
 from ruamel.yaml import YAML
+from utils.pose_utils import CustomizePose
+from utils.vec2d import Vec2d
+from utils.box2d import Box2d
+from utils.box2d import LineSegment
+import cv2
+
+class Obs_Processor():
+    def __init__(self) -> None:
+        self.downsample_rate = 4
+        self.n_channels = 3
+
+    def process_img(self, img):
+        processed_img = self.change_bg_color(img)
+        H, W = img.shape[:2]
+        processed_img = cv2.resize(processed_img, (W//self.downsample_rate, H//self.downsample_rate))
+        # plt.imshow(processed_img)  # 直接显示
+        # plt.savefig('processed_img.png')  # 保存到当前目录
+        processed_img = processed_img.transpose(2,0,1)
+        processed_img = processed_img/255.0
+
+        return processed_img
+
+    def change_bg_color(self, img):
+        processed_img = img.copy()
+        # bg_pos = img==BG_COLOR[:3]
+        # bg_pos = (np.sum(bg_pos,axis=-1) == 3)
+        # processed_img[bg_pos] = (0,0,0)
+        return processed_img
+
 
 class ParkingDataModuleReal(torch.utils.data.Dataset):
     def __init__(self, config: Configuration, is_train):
@@ -31,6 +64,10 @@ class ParkingDataModuleReal(torch.utils.data.Dataset):
         self.traj_point = []
         self.traj_point_token = []
         self.target_point = []
+        self.history_trajector_vcs = []
+        self.render_cnn = BevRender()
+        self.img_processor = Obs_Processor()
+        self.img_cnn_path_list = []
        
         self.gnndir = "./interm_data"
         if is_train == 1:
@@ -44,7 +81,7 @@ class ParkingDataModuleReal(torch.utils.data.Dataset):
             self.e2e_dataset = os.path.join("./e2e_dataset", "test", "e2e_dataset.pt")
         self.dataptpath = os.path.join(self.gnndir, f"{self.folder}_intermediate")
 
-        if os.path.exists(self.e2e_dataset):
+        if  os.path.exists(self.e2e_dataset):
             # Load the dataset.pt file
             self.load_dataset()
         else:
@@ -52,7 +89,7 @@ class ParkingDataModuleReal(torch.utils.data.Dataset):
             self.create_gt_data()
             self.save_dataset()
 
-        self.graph_dataset = GraphDataset(self.dataptpath)
+        # self.graph_dataset = GraphDataset(self.dataptpath)
         if is_train == 1:
             if self.cfg.item_number == 2:
                 all_x = self.traj_point[:, 0::2]          # 已 flatten，每样本 (30*2,)
@@ -78,21 +115,21 @@ class ParkingDataModuleReal(torch.utils.data.Dataset):
             config.target_point_theta_min, config.target_point_theta_max = self.target_point_theta_min, self.target_point_theta_max
 
 
-            all_nodes = []
-            for g in self.graph_dataset:
-                all_nodes.append(g.x[:, :3])      # 取前3列：x,y,heading
-            all_nodes = torch.cat(all_nodes, dim=0)
+            # all_nodes = []
+            # for g in self.graph_dataset:
+            #     all_nodes.append(g.x[:, :3])      # 取前3列：x,y,heading
+            # all_nodes = torch.cat(all_nodes, dim=0)
 
-            self.graph_norm_x_min = all_nodes[:, 0].min().item()
-            self.graph_norm_x_max = all_nodes[:, 0].max().item()
-            self.graph_norm_y_min = all_nodes[:, 1].min().item()
-            self.graph_norm_y_max = all_nodes[:, 1].max().item()
-            self.graph_norm_theta_min = all_nodes[:, 2].min().item()
-            self.graph_norm_theta_max = all_nodes[:, 2].max().item()
+            # self.graph_norm_x_min = all_nodes[:, 0].min().item()
+            # self.graph_norm_x_max = all_nodes[:, 0].max().item()
+            # self.graph_norm_y_min = all_nodes[:, 1].min().item()
+            # self.graph_norm_y_max = all_nodes[:, 1].max().item()
+            # self.graph_norm_theta_min = all_nodes[:, 2].min().item()
+            # self.graph_norm_theta_max = all_nodes[:, 2].max().item()
 
-            config.graph_norm_x_min, config.graph_norm_x_max = self.graph_norm_x_min, self.graph_norm_x_max
-            config.graph_norm_y_min, config.graph_norm_y_max = self.graph_norm_y_min, self.graph_norm_y_max
-            config.graph_norm_theta_min, config.graph_norm_theta_max = self.graph_norm_theta_min, self.graph_norm_theta_max
+            # config.graph_norm_x_min, config.graph_norm_x_max = self.graph_norm_x_min, self.graph_norm_x_max
+            # config.graph_norm_y_min, config.graph_norm_y_max = self.graph_norm_y_min, self.graph_norm_y_max
+            # config.graph_norm_theta_min, config.graph_norm_theta_max = self.graph_norm_theta_min, self.graph_norm_theta_max
             yaml = YAML()
             yaml.preserve_quotes = True    
             yaml.width = 4096               
@@ -103,12 +140,12 @@ class ParkingDataModuleReal(torch.utils.data.Dataset):
             cfg_dict["traj_norm_x_max"] = float(config.traj_norm_x_max)
             cfg_dict["traj_norm_y_min"] = float(config.traj_norm_y_min)
             cfg_dict["traj_norm_y_max"] = float(config.traj_norm_y_max)
-            cfg_dict["graph_norm_x_min"] = float(config.graph_norm_x_min)
-            cfg_dict["graph_norm_x_max"] = float(config.graph_norm_x_max)
-            cfg_dict["graph_norm_y_min"] = float(config.graph_norm_y_min)
-            cfg_dict["graph_norm_y_max"] = float(config.graph_norm_y_max)
-            cfg_dict["graph_norm_theta_min"] = float(config.graph_norm_theta_min)
-            cfg_dict["graph_norm_theta_max"] = float(config.graph_norm_theta_max)
+            # cfg_dict["graph_norm_x_min"] = float(config.graph_norm_x_min)
+            # cfg_dict["graph_norm_x_max"] = float(config.graph_norm_x_max)
+            # cfg_dict["graph_norm_y_min"] = float(config.graph_norm_y_min)
+            # cfg_dict["graph_norm_y_max"] = float(config.graph_norm_y_max)
+            # cfg_dict["graph_norm_theta_min"] = float(config.graph_norm_theta_min)
+            # cfg_dict["graph_norm_theta_max"] = float(config.graph_norm_theta_max)
             cfg_dict["target_point_x_min"] = float(config.target_point_x_min)
             cfg_dict["target_point_x_max"] = float(config.target_point_x_max)
             cfg_dict["target_point_y_min"] = float(config.target_point_y_min)
@@ -123,9 +160,9 @@ class ParkingDataModuleReal(torch.utils.data.Dataset):
             self.traj_x_min, self.traj_x_max = config.traj_norm_x_min, config.traj_norm_x_max
             self.traj_y_min, self.traj_y_max = config.traj_norm_y_min, config.traj_norm_y_max
 
-            self.graph_norm_x_min, self.graph_norm_x_max = config.graph_norm_x_min, config.graph_norm_x_max
-            self.graph_norm_y_min, self.graph_norm_y_max = config.graph_norm_y_min, config.graph_norm_y_max
-            self.graph_norm_theta_min, self.graph_norm_theta_max = config.graph_norm_theta_min, config.graph_norm_theta_max   
+            # self.graph_norm_x_min, self.graph_norm_x_max = config.graph_norm_x_min, config.graph_norm_x_max
+            # self.graph_norm_y_min, self.graph_norm_y_max = config.graph_norm_y_min, config.graph_norm_y_max
+            # self.graph_norm_theta_min, self.graph_norm_theta_max = config.graph_norm_theta_min, config.graph_norm_theta_max   
 
 
 
@@ -142,6 +179,7 @@ class ParkingDataModuleReal(torch.utils.data.Dataset):
         self.traj_point = data['traj_point']
         self.traj_point_token = data['traj_point_token']
         self.target_point = data['target_point']
+        self.img_cnn_path_list = data['img_cnn_path_list']
 
     def save_dataset(self):
         # Save the dataset to dataset.pt file
@@ -150,54 +188,66 @@ class ParkingDataModuleReal(torch.utils.data.Dataset):
             'fuzzy_target_point': self.fuzzy_target_point,
             'traj_point': self.traj_point,
             'traj_point_token': self.traj_point_token,
-            'target_point': self.target_point
+            'target_point': self.target_point,
+            'img_cnn_path_list':self.img_cnn_path_list
         }
         torch.save(data, self.e2e_dataset)
 
     def __len__(self):
         return len(self.traj_point)
 
+    # def __getitem__(self, index):
+    #     g: GraphData = self.graph_dataset[index].clone()  # 这是 GraphData 实例
+
+    #     x = g.x.clone()
+
+    #     x[:, 0] = (x[:, 0] - self.graph_norm_x_min) / (self.graph_norm_x_max - self.graph_norm_x_min)
+    #     x[:, 1] = (x[:, 1] - self.graph_norm_y_min) / (self.graph_norm_y_max - self.graph_norm_y_min)
+    #     x[:, 2] = (x[:, 2] - self.graph_norm_theta_min) / (self.graph_norm_theta_max - self.graph_norm_theta_min)
+    #     g.x = x
+    #     # 把轨迹/目标等张量挂到图上成为额外属性
+    #     traj = self.traj_point[index].copy()
+    #     traj[0::2] = (traj[0::2] - self.traj_x_min) / (self.traj_x_max - self.traj_x_min)
+    #     traj[1::2] = (traj[1::2] - self.traj_y_min) / (self.traj_y_max - self.traj_y_min)
+        
+    #     target_point = self.target_point[index].copy()
+    #     target_point[0] = (target_point[0] - self.target_point_x_min) / (self.target_point_x_max - self.target_point_x_min)
+    #     target_point[1] = (target_point[1] - self.target_point_y_min) / (self.target_point_y_max - self.target_point_y_min)
+    #     target_point[2] = (target_point[2] - self.target_point_theta_min) / (self.target_point_theta_max - self.target_point_theta_min)
+    #     # g.gt_traj_point        = torch.from_numpy(np.array(self.traj_point[index]))
+    #     # g.gt_traj_point        = torch.from_numpy(traj.astype(np.float32))   增加了heading的预测后，没有进行修正，先不要用
+    #     g.gt_traj_point_token  = torch.from_numpy(np.array(self.traj_point_token[index]))
+    #     g.target_point         = torch.from_numpy(target_point.astype(np.float32))
+    #     # g.fuzzy_target_point   = torch.from_numpy(self.fuzzy_target_point[index])
+
+    #     return g  
+
     def __getitem__(self, index):
-        g: GraphData = self.graph_dataset[index].clone()  # 这是 GraphData 实例
-
-        x = g.x.clone()
-
-        x[:, 0] = (x[:, 0] - self.graph_norm_x_min) / (self.graph_norm_x_max - self.graph_norm_x_min)
-        x[:, 1] = (x[:, 1] - self.graph_norm_y_min) / (self.graph_norm_y_max - self.graph_norm_y_min)
-        x[:, 2] = (x[:, 2] - self.graph_norm_theta_min) / (self.graph_norm_theta_max - self.graph_norm_theta_min)
-        g.x = x
-        # 把轨迹/目标等张量挂到图上成为额外属性
+ 
         traj = self.traj_point[index].copy()
         traj[0::2] = (traj[0::2] - self.traj_x_min) / (self.traj_x_max - self.traj_x_min)
         traj[1::2] = (traj[1::2] - self.traj_y_min) / (self.traj_y_max - self.traj_y_min)
+        gt_traj_point        = torch.from_numpy(traj.astype(np.float32))
         
         target_point = self.target_point[index].copy()
         target_point[0] = (target_point[0] - self.target_point_x_min) / (self.target_point_x_max - self.target_point_x_min)
         target_point[1] = (target_point[1] - self.target_point_y_min) / (self.target_point_y_max - self.target_point_y_min)
         target_point[2] = (target_point[2] - self.target_point_theta_min) / (self.target_point_theta_max - self.target_point_theta_min)
-        # g.gt_traj_point        = torch.from_numpy(np.array(self.traj_point[index]))
-        # g.gt_traj_point        = torch.from_numpy(traj.astype(np.float32))   增加了heading的预测后，没有进行修正，先不要用
-        g.gt_traj_point_token  = torch.from_numpy(np.array(self.traj_point_token[index]))
-        g.target_point         = torch.from_numpy(target_point.astype(np.float32))
-        # g.fuzzy_target_point   = torch.from_numpy(self.fuzzy_target_point[index])
-
-        return g  
-
-    # def __getitem__(self, index):
-    #     data = self.graph_dataset[index]  # Get the graph data for the given index
-    #     data_dict = {
-    #         'x': data.x,
-    #         'y': data.y,
-    #         'cluster': data.cluster,
-    #         'edge_index': data.edge_index,
-    #         'valid_len': data.valid_len,
-    #         'time_step_len': data.time_step_len,
-    #         'gt_traj_point': torch.from_numpy(np.array(self.traj_point[index])),
-    #         'gt_traj_point_token': torch.from_numpy(np.array(self.traj_point_token[index])),
-    #         'target_point': torch.from_numpy(self.target_point[index]),
-    #         'fuzzy_target_point': torch.from_numpy(self.fuzzy_target_point[index])
-    #     }
-    #     return data_dict
+      
+        gt_traj_point_token  = torch.from_numpy(np.array(self.traj_point_token[index]))
+        target_point         = torch.from_numpy(target_point.astype(np.float32))
+        img_path = self.img_cnn_path_list[index]
+        img = Image.open(img_path).convert("RGB")
+        img = np.array(img)
+        processed_img = self.img_processor.process_img(img)
+        processed_img         = torch.from_numpy(processed_img.astype(np.float32))
+        data = {
+            "image": processed_img,               # Tensor [3,H,W]
+            "gt_traj_point": gt_traj_point,                # Tensor [N]
+            "target_point": target_point,         # Tensor [3]
+            "gt_traj_point_token": gt_traj_point_token,
+        }
+        return data
     def save_measurements(self, measurements, ego_index, filename, cnt, measurement_tag="measurements"):
         measurements_path = os.path.join(filename, str(ego_index))
         os.makedirs(measurements_path, exist_ok=True)
@@ -217,12 +267,112 @@ class ParkingDataModuleReal(torch.utils.data.Dataset):
         }
 
         return pose_ret
+    
+    def parser_measurements_target(self, target_point, switch):
+        pose_ret = {
+            'x':target_point[0],
+            'y':target_point[1],
+            'theta':target_point[2],
+            'dir': switch,
+        }
 
+        return pose_ret
+    
+    def parser_clusters_pred(self, cluster_frame_in_vcs):
+        clusters_list =[]
+        for clusters in cluster_frame_in_vcs:
+            my_dict = {
+                "id": clusters["id"],
+                "p0": {
+                    "x": clusters["p0"].x,
+                    "y": clusters["p0"].y
+                },
+                "p1": {
+                    "x": clusters["p1"].x,
+                    "y": clusters["p1"].y
+                }
+            }
+            clusters_list.append(my_dict)
+        return clusters_list
+    
+    def create_clusters_info_vcs(self, cluster_info_obj: ClusterInfoParser, world2ego_mat: np.array, ego_index, switch_side: float, filename):
+        cluster_frame_in_world = cluster_info_obj.get_clusters(ego_index)
+        cluster_frame_in_vcs =[]  
+        cluster_dict_template = {
+                "id": None,
+                "p0": {},
+                "p1": {}
+            }
+        for index, each_cluster in enumerate(cluster_frame_in_world):
+            each_cluster_vcs = copy.deepcopy(cluster_dict_template)
+            each_cluster_vcs["id"] = each_cluster["id"] * switch_side
+            each_cluster_vcs["p0"] = each_cluster["p0"].get_pose_in_ego(world2ego_mat)
+            each_cluster_vcs["p0"].y = each_cluster_vcs["p0"].y * switch_side
+            each_cluster_vcs["p1"] = each_cluster["p1"].get_pose_in_ego(world2ego_mat)
+            each_cluster_vcs["p1"].y = each_cluster_vcs["p1"].y * switch_side
+            cluster_frame_in_vcs.append(each_cluster_vcs)
+        # cluster_frame_in_switch = self.parser_clusters_pred(cluster_frame_in_vcs)
+        # self.save_measurements(cluster_frame_in_switch, ego_index, filename, 0, "pre_cluster")
+
+        return cluster_frame_in_vcs
+    
+    def judge_clusters_info_vcs(self, cluster_info_obj: ClusterInfoParser, ego_index, ego_pose: CustomizePose, filename):
+        vehicle_width = 1.781 
+        vehicle_length = 3.99 
+        vehicle_rear_overhang = 0.704
+        center_offset = vehicle_length / 2.0 - vehicle_rear_overhang
+        center_pose = Vec2d(ego_pose.x, ego_pose.y)
+        vehicle_center = center_pose + Vec2d.create_unit_vec2d(ego_pose.yaw/180*3.14) * center_offset
+
+        # 2. 创建 Box2d
+        vehicle_box = Box2d(vehicle_center, ego_pose.yaw/180*3.14, vehicle_length, vehicle_width)
+        for i in range(0, cluster_info_obj.total_frames):
+            cluster_frame_in_world = cluster_info_obj.get_clusters(i)
+            for index, each_cluster in enumerate(cluster_frame_in_world):
+                x_0 = each_cluster["p0"].x
+                y_0 = each_cluster["p0"].y
+                x_1 = each_cluster["p1"].x
+                y_1 = each_cluster["p1"].y
+                cluster_line = LineSegment(Vec2d(x_0,y_0), Vec2d(x_1, y_1))
+                overlap = vehicle_box.overlap_with_segment(cluster_line)
+                if(overlap):
+                    print("cluster",i)
+                    print("filename", filename)
+                    print("ego_index", ego_index)
+    def create_history_point(self, traje_info_obj: TrajectoryInfoParser, ego_index: int, world2ego_mat: np.array, switch_side: float):
+        history_trajector_vcs = []
+        history_traj_len = 0
+        if ego_index == 0:
+            return history_trajector_vcs, history_traj_len
+        for i in range(1, 13):  # predict iteration
+            ds = -0.5 * i + traje_info_obj.get_trajectory_point(ego_index).s
+            if(ds < 0):
+                return history_trajector_vcs, history_traj_len
+            history_pose_in_world = traje_info_obj.get_trajectory_point_by_s_dec(ego_index, ds)
+            history_pose_in_ego = history_pose_in_world.get_pose_in_ego(world2ego_mat)
+            history_pose_in_ego.y = history_pose_in_ego.y * switch_side
+            history_pose_in_ego.yaw = self.get_safe_yaw(history_pose_in_ego.yaw) * switch_side
+            history_trajector_vcs.append(history_pose_in_ego)
+            history_trajector_vcs = history_trajector_vcs[::-1]
+            history_traj_len = len(history_trajector_vcs)
+
+        return history_trajector_vcs, history_traj_len
+#########
+
+#自车坐标系下，车头朝向为x轴，右手坐标系，左侧为y轴
+
+    """
+    CNN版本新增 cluster的自车坐标系转换, 泊车目标的转换，历史轨迹点收集，渲染图生成
+
+
+    """
+######
     def create_gt_data(self):
         all_tasks = self.get_all_tasks()
 
         for task_index, task_path in tqdm.tqdm(enumerate(all_tasks)):  # task iteration
             traje_info_obj = TrajectoryInfoParser(task_index, task_path)
+            cluster_info_obj = ClusterInfoParser(task_index, task_path)
             judge_ego_pose = traje_info_obj.get_trajectory_point(0)
             judge_world2ego_mat = judge_ego_pose.get_homogeneous_transformation().get_inverse_matrix()
             finally_pose_in_ego = traje_info_obj.trajectory_list[-1].get_pose_in_ego(judge_world2ego_mat)
@@ -236,12 +386,31 @@ class ParkingDataModuleReal(torch.utils.data.Dataset):
                 # create parking goal
                 fuzzy_parking_goal, parking_goal = self.create_parking_goal_gt(traje_info_obj, world2ego_mat, switch_side)
 
+                # target_pose = self.parser_measurements_target(parking_goal, switch_side)
+                # self.save_measurements(target_pose, ego_index, task_path, 0, "pre_target")
+
+                cluster_frame_info_vcs = self.create_clusters_info_vcs(cluster_info_obj, world2ego_mat, ego_index, switch_side, task_path)
+
+                # self.judge_clusters_info_vcs(cluster_info_obj, ego_index, ego_pose, str(task_path))  # 脏数据筛查 判断自车的所有轨迹有没有与cluster碰撞的
+
+                history_trajector_vcs, history_traj_len = self.create_history_point(traje_info_obj, ego_index, world2ego_mat, switch_side)
+
+                start_pose = traje_info_obj.get_trajectory_point(0)
+                start_pose_vcs = start_pose.get_pose_in_ego(world2ego_mat)
+                start_pose_vcs.y = start_pose_vcs.y * switch_side
+                start_pose_vcs.yaw = self.get_safe_yaw(start_pose_vcs.yaw) * switch_side
+                # imge_cnn = self.render_cnn.render(start_pose_vcs, history_trajector_vcs, history_traj_len, parking_goal, cluster_frame_info_vcs, ego_index, task_path)
+                measurements_path = os.path.join(task_path, str(ego_index))
+                measurements_path_final = os.path.join(measurements_path, "cnn.png")
+
                 self.traj_point.append(predict_point_gt)
 
                 self.traj_point_token.append(predict_point_token_gt)
                 self.target_point.append(parking_goal)
                 self.fuzzy_target_point.append(fuzzy_parking_goal)
                 self.task_index_list.append(task_index)
+                self.img_cnn_path_list.append(measurements_path_final)
+
 
         self.format_transform()
 
@@ -256,7 +425,7 @@ class ParkingDataModuleReal(torch.utils.data.Dataset):
             predict_pose_in_world = traje_info_obj.get_trajectory_point_by_s(ego_index, ds)
             predict_pose_in_ego = predict_pose_in_world.get_pose_in_ego(world2ego_mat)
             predict_pose_in_ego.y = predict_pose_in_ego.y * switch_side
-            predict_pose_in_ego.yaw = predict_pose_in_ego.yaw * switch_side
+            predict_pose_in_ego.yaw = self.get_safe_yaw(predict_pose_in_ego.yaw) * switch_side
             progress = traje_info_obj.get_progress(predict_stride_index)
             if self.cfg.item_number == 2:
                 predict_point.append([predict_pose_in_ego.x, predict_pose_in_ego.y])

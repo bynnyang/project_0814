@@ -93,11 +93,12 @@ def create_clusters_info_vcs(cluster_info_obj: ClusterInfoParser, world2ego_mat:
 
     return cluster_frame_in_vcs
 
+#GCN时，车辆的四个角点坐标系弄成了车头方向是y轴的右手坐标系，并且后悬的长度给错了
 def get_agent_feature_ls(total_frames):
-    vehicle_width = 1.8
+    vehicle_width = 1.781
     vehicle_length = 3.99
-    vehicle_rear_overhang = 3.2
-    vehicle_angle = 3.14 / 2.0
+    vehicle_rear_overhang = 0.704
+    vehicle_angle = 0.0
     
     vehicle_position = Vec2d(0.0, 0.0)
 
