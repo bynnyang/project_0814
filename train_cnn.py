@@ -18,6 +18,7 @@ from ruamel.yaml import YAML
 from inference import test_main
 from model_interface.model.network import AE_Conv
 import torch.nn.functional as F
+import torchvision.utils as vutils
 
 
 # 一些默认超参数，可以按需改
@@ -27,6 +28,54 @@ val_every      = 5
 show_every_step = 50
 save_dir       = "./trained_params"
 date_record    = "imgae2511"  # 方便区分模型
+
+def foreground_mse(inputs, outputs, threshold=0.05):
+    """
+    只在“前景像素”上计算 MSE。
+    inputs, outputs: [B, C, H, W]，值范围建议在 [0, 1]
+    threshold: 大于该值视为前景（比如 BEV 中的车、车位线、轨迹等）
+    """
+    # 任一通道 > threshold 判为前景
+    mask = (inputs > threshold).any(dim=1, keepdim=True).float()  # [B, 1, H, W]
+
+    diff = (outputs - inputs) ** 2
+    # 只统计前景区域
+    mse_fg = (diff * mask).sum() / (mask.sum() + 1e-6)
+    return mse_fg
+
+@torch.no_grad()
+def save_recon_images(model, val_loader, device, epoch,
+                      save_dir="ae_recons", num_images=4):
+    model.eval()
+    os.makedirs(save_dir, exist_ok=True)
+
+    # 取一个 batch
+    try:
+        batch = next(iter(val_loader))
+    except StopIteration:
+        print("[AE] val_loader is empty, skip saving recon images.")
+        return
+
+    if hasattr(batch, "image"):
+        imgs = batch.image
+    else:
+        imgs = batch["image"]
+
+    imgs = imgs.to(device)
+
+    # 前向重建
+    recon = model(imgs)
+
+    # 只取前 num_images 张
+    imgs = imgs[:num_images]
+    recon = recon[:num_images]
+
+    # 拼成 2 行：第一行输入，第二行输出
+    grid = torch.cat([imgs, recon], dim=0)
+
+    save_path = os.path.join(save_dir, f"epoch_{epoch:04d}.png")
+    vutils.save_image(grid, save_path, nrow=num_images, normalize=True)
+    print(f"[AE] 重建图已保存到: {save_path}")
 
 def save_ae_checkpoint(checkpoint_dir, ae_model, optimizer, epoch, val_loss, date):
     os.makedirs(checkpoint_dir, exist_ok=True)
@@ -85,6 +134,7 @@ def train_img_ae(config_obj):
 
     # training loop
     best_val_loss = float("inf")
+    fg_loss_weight = 2.0
     global_step = 0
  
     # ========= 3. 训练循环 =========
@@ -103,6 +153,11 @@ def train_img_ae(config_obj):
 
             imgs = imgs.to(device)
 
+                # === 在这里加一行测试 mask ===
+            # mask = (imgs > 0.05).any(dim=1, keepdim=True).float()
+            # vutils.save_image(mask, "mask_test.png", normalize=True)
+            # break  # 只保存一次
+
             optimizer.zero_grad()
 
             # AE 前向
@@ -110,9 +165,10 @@ def train_img_ae(config_obj):
 
             # 重构损失（也可以用 BCE，根据你图像是否 0~1）
             recon_loss = F.mse_loss(recon_x, imgs, reduction="mean")
+            fg_loss = foreground_mse(imgs, recon_x, threshold=0.05)
 
 
-            loss = recon_loss 
+            loss = recon_loss + fg_loss_weight * fg_loss
             loss.backward()
             optimizer.step()
 
@@ -125,7 +181,7 @@ def train_img_ae(config_obj):
                 print(
                     f"[AE][epoch {epoch} step {global_step}] "
                     f"loss={loss.item():.6f} "
-                    f"(recon={recon_loss.item():.6f}), "
+                    f"(recon={recon_loss.item():.6f}, fg={fg_loss.item():.6f}), "
                     f"lr={optimizer.state_dict()['param_groups'][0]['lr']:.6f}"
                 )
 
@@ -145,21 +201,41 @@ def train_img_ae(config_obj):
             val_samples = 0
             with torch.no_grad():
                 for batch in val_loader:
-                    if hasattr(batch, "img"):
-                        imgs = batch.img
+                    if hasattr(batch, "image"):
+                        imgs = batch.image
                     else:
-                        imgs = batch["img"]
+                        imgs = batch["image"]
                     imgs = imgs.to(device)
 
                     recon_x = ae(imgs)
                     recon_loss = F.mse_loss(recon_x, imgs, reduction="mean")
+                    fg_loss = foreground_mse(imgs, recon_x, threshold=0.05)
+
+                    loss = recon_loss + fg_loss_weight * fg_loss
                     loss = recon_loss
                     B = imgs.size(0)
-                    al_loss += loss.item() * B
-                    al_samples += B
+                    val_loss += loss.item() * B
+                    val_recon_loss += recon_loss.item() * B
+                    val_fg_loss += fg_loss.item() * B
+                    val_samples += B
 
             avg_val_loss = val_loss / max(1, val_samples)
-            print(f"[AE] Epoch {epoch} | val_loss={avg_val_loss:.6f}")
+            avg_val_recon = val_recon_loss / max(1, val_samples)
+            avg_val_fg = val_fg_loss / max(1, val_samples)
+            print(
+                f"[AE] Epoch {epoch} | "
+                f"val_loss={avg_val_loss:.6f} "
+                f"(recon={avg_val_recon:.6f}, fg={avg_val_fg:.6f})"
+            )
+
+            save_recon_images(
+                model=ae,
+                val_loader=val_loader,
+                device=device,
+                epoch=epoch,
+                save_dir=os.path.join(save_dir, "ae_recons"),
+                num_images=4
+            )
 
             # 保存最优 checkpoint（用于调试/恢复）
             if avg_val_loss < best_val_loss:

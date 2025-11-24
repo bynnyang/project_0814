@@ -24,7 +24,7 @@ import cv2
 
 class Obs_Processor():
     def __init__(self) -> None:
-        self.downsample_rate = 4
+        self.downsample_rate = 1
         self.n_channels = 3
 
     def process_img(self, img):

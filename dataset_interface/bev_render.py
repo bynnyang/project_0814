@@ -14,7 +14,6 @@ from gym import spaces
 from gym.error import DependencyNotInstalled
 from shapely.geometry import Polygon
 from shapely.affinity import affine_transform
-from heapdict import heapdict
 import matplotlib.pyplot as plt
 from utils.vec2d import Vec2d
 from utils.box2d import Box2d
@@ -30,13 +29,13 @@ except ImportError:
     )
 
 BG_COLOR = (0, 0, 0)
-START_COLOR = (0, 128, 255)  #蓝色
-DEST_COLOR = (0, 0, 255) #深绿色
-OBSTACLE_COLOR = (255, 0, 0)#灰色
-TRAJ_COLOR_HIGH = (10, 10, 200)#深蓝色
-TRAJ_COLOR_LOW = (10, 10, 10)#深灰色
-EGO_CENTER_COLOR = (255, 255, 255)  # 亮绿
-TARGET_CENTER_COLOR = (255, 255, 255)  # 纯蓝
+# START_COLOR = (0, 128, 255) 
+DEST_COLOR = (0, 0, 255) 
+OBSTACLE_COLOR = (255, 0, 0)
+# TRAJ_COLOR_HIGH = (10, 10, 200)
+# TRAJ_COLOR_LOW = (10, 10, 10)
+EGO_CENTER_COLOR = (255, 255, 255)  
+TARGET_CENTER_COLOR = (255, 255, 255) 
 # TRAJ_COLORS = list(map(tuple,np.linspace(\
 #     np.array(TRAJ_COLOR_LOW), np.array(TRAJ_COLOR_HIGH), TRAJ_RENDER_LEN, endpoint=True, dtype=np.uint8)))
 
