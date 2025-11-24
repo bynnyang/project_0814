@@ -199,6 +199,8 @@ def train_img_ae(config_obj):
             ae.eval()
             val_loss = 0.0
             val_samples = 0
+            val_recon_loss = 0.0
+            val_fg_loss = 0.0
             with torch.no_grad():
                 for batch in val_loader:
                     if hasattr(batch, "image"):
@@ -212,7 +214,7 @@ def train_img_ae(config_obj):
                     fg_loss = foreground_mse(imgs, recon_x, threshold=0.05)
 
                     loss = recon_loss + fg_loss_weight * fg_loss
-                    loss = recon_loss
+                    
                     B = imgs.size(0)
                     val_loss += loss.item() * B
                     val_recon_loss += recon_loss.item() * B
