@@ -15,9 +15,8 @@ VehicleBox = LinearRing([
     (FRONT_HANG + WHEEL_BASE,  WIDTH/2),
     (-REAR_HANG,  WIDTH/2)])
 
-VALID_SPEED = [-1.0, 1.0]
+VALID_SPEED = [-1.2, 1.2]
 VALID_STEER = [-0.62, 0.62]
-VALID_ACCEL = [-1.0, 1.0]
 
 NUM_STEP = 10
 STEP_LENGTH = 5e-2

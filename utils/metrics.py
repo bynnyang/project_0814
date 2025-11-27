@@ -71,3 +71,40 @@ class CustomizedMetric:
 
     def get_gt_points(self, batch_gt_points):
         return batch_gt_points[:, 1:-2].reshape(-1).view(-1, self.cfg.item_number)
+    
+
+
+
+class CustomizedMetricBev:
+    def __init__(self, cfg: Configuration, pred_traj_point, gt_traj) -> None:
+        self.cfg = cfg
+        self.distance_dict = self.calculate_distance(pred_traj_point, gt_traj)
+
+    def calculate_distance(self, pred_traj_point, gt_traj):
+        distance_dict = {}
+        if self.cfg.batch_size != gt_traj.shape[0]:
+            return distance_dict
+
+
+        prediction_points_np = np.array(pred_traj_point.detach().cpu().numpy())
+        gt_points_np = np.array(gt_traj.detach().cpu().numpy())
+        pred_xy = prediction_points_np[:, :, :2]   # 取前两个维度 x, y
+        gt_xy   = gt_points_np[:, :, :2]
+
+
+        l2_list, haus_list, fourier_difference = [], [], []
+        for index in range(self.cfg.batch_size):
+            distance_obj = TrajectoryDistance(pred_xy[index], gt_xy[index])
+            if distance_obj.get_len() < 1:
+                continue
+            l2_list.append(distance_obj.get_l2_distance())
+            if distance_obj.get_len() > 1:
+                haus_list.append(distance_obj.get_haus_distance())
+                fourier_difference.append(distance_obj.get_fourier_difference())
+        if len(l2_list) > 0:
+            distance_dict.update({"L2_distance": np.mean(l2_list)})
+        if len(haus_list) > 0:
+            distance_dict.update({"hausdorff_distance": np.mean(haus_list)})
+        if len(fourier_difference) > 0:
+            distance_dict.update({"fourier_difference": np.mean(fourier_difference)})
+        return distance_dict

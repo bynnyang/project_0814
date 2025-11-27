@@ -2,6 +2,7 @@ from torch import nn
 
 from utils.config import Configuration
 from utils.metrics import CustomizedMetric
+from utils.metrics import CustomizedMetricBev
 
 import torch
 from vehicle_config import *
@@ -194,4 +195,12 @@ class TrajPointLoss(nn.Module):
             for k, v in log_dict.items():
                 print(f"  {k}: {v.item():.6f}")
             print("}")
+
+
+        if global_step == 19:
+            customized_metric = CustomizedMetricBev(self.cfg, global_next, gt_traj[:,1:,:])
+            val_loss_dict = {}
+            val_loss_dict.update(customized_metric.calculate_distance(global_next, gt_traj[:,1:,:]))
+            print(val_loss_dict)
+
         return total_loss, log_dict
