@@ -195,7 +195,11 @@ class TrajPointLoss(nn.Module):
         if (global_step + 1) % 100 == 0:
             print(f"[step {global_step}] loss_dict: {{")
             for k, v in log_dict.items():
-                print(f"  {k}: {v.item():.6f}")
+                if isinstance(v, torch.Tensor):
+                    v_val = v.item()
+                else:
+                    v_val = float(v)  # numpy.float64 / float 都可以转
+                print(f"  {k}: {v_val:.6f}")
             print("}")
 
 
