@@ -36,7 +36,7 @@ show_every = 20
 val_every = 5
 best_minade = float('inf')
 save_dir = './trained_params'
-date_record = "251126"
+date_record = "251127"
 global_step = 0
 
 import warnings
@@ -70,7 +70,7 @@ def save_checkpoint(checkpoint_dir, model, optimizer, end_epoch, val_minade, dat
         'end_epoch' : end_epoch,
         'val_minade': val_minade
         }
-    checkpoint_path = os.path.join(checkpoint_dir, f'epoch_{end_epoch}.valminade_{val_minade:.3f}.{date}.{"ParkE2E"}.pth')
+    checkpoint_path = os.path.join(checkpoint_dir, f'epoch_{end_epoch}.valminade_{val_minade:.6f}.{date}.{"ParkE2E"}.pth')
     torch.save(state, checkpoint_path)
     print('model saved to %s' % checkpoint_path)
     
@@ -174,11 +174,11 @@ def train(config_obj):
             # model.train()
             global_step += 1
             if (global_step + 1) % show_every == 0:
-                print( f"loss at epoch {epoch} step {global_step}:{loss.item():3f}, lr:{optimizer.state_dict()['param_groups'][0]['lr']: .6f}, time:{time.time() - start_tic: 4f}sec")
+                print( f"loss at epoch {epoch} step {global_step}:{loss.item():6f}, lr:{optimizer.state_dict()['param_groups'][0]['lr']: .6f}, time:{time.time() - start_tic: 4f}sec")
         scheduler.step()
         # train_acc = correct / total
         print(
-            f"loss at epoch {epoch}:{acc_loss / num_samples:.3f}, lr:{optimizer.state_dict()['param_groups'][0]['lr']: .6f}, time:{time.time() - start_tic: 4f}sec")
+            f"loss at epoch {epoch}:{acc_loss / num_samples:.6f}, lr:{optimizer.state_dict()['param_groups'][0]['lr']: .6f}, time:{time.time() - start_tic: 4f}sec")
         # print(f'train at epoch {epoch} | train acc: {train_acc:.4f}')   
         if (epoch+1) % val_every == 0 and (not epoch < end_epoch):
             print("eval as epoch:{epoch}")

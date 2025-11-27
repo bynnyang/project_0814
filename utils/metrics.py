@@ -88,8 +88,8 @@ class CustomizedMetricBev:
 
         prediction_points_np = np.array(pred_traj_point.detach().cpu().numpy())
         gt_points_np = np.array(gt_traj.detach().cpu().numpy())
-        pred_xy = prediction_points_np[:, :, :2]   # 取前两个维度 x, y
-        gt_xy   = gt_points_np[:, :, :2]
+        pred_xy = prediction_points_np[:, :, :2] * self.cfg.traj_x_range  # 取前两个维度 x, y
+        gt_xy   = gt_points_np[:, :, :2] * self.cfg.traj_x_range
 
 
         l2_list, haus_list, fourier_difference = [], [], []
