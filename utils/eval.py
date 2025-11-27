@@ -16,7 +16,7 @@ def get_eval_metric_results(config_obj, model, data_loader, device, global_step)
     model.eval()
     traj_point_loss_func = None
     if config_obj.decoder_method == "transformer":
-        traj_point_loss_func = TokenTrajPointLoss(config_obj)
+        traj_point_loss_func = TrajPointLoss(config_obj)
     elif config_obj.decoder_method == "gru":
          traj_point_loss_func = TrajPointLoss(config_obj)
     with torch.no_grad():
@@ -26,7 +26,8 @@ def get_eval_metric_results(config_obj, model, data_loader, device, global_step)
                 if isinstance(val, torch.Tensor):
                     data[key] = val.to(device)
             out = model(data, global_step)
-            loss+=traj_point_loss_func(out, data, global_step)
+            loss_step, _ = traj_point_loss_func(out, data["gt_traj_point"], global_step)
+            loss+=loss_step
         loss = loss / len(data_loader)
         return loss
 

@@ -20,9 +20,9 @@ num_workers: 8
 # resume_path: ""
 
 ##################### Data Process #####################
-autoregressive_points: 30
+autoregressive_points: 7
 traj_downsample_stride: 3
-item_number: 2
+item_number: 3
 token_nums: 600
 append_token: 3
 xy_max: 3
@@ -66,6 +66,8 @@ embed_size: 128
 k_img_conv: 3
 img_conv_layers: [4, 8]
 img_linear_layers: [256]
+traj_x_range: 10.0
+traj_y_range: 10.0
 
 
 
@@ -76,10 +78,10 @@ num_subgraph_layers: 3
 subgraph_width: 64
 global_graph_width: 128
 max_id: 50
-traj_norm_x_min: -2.898744583129883
-traj_norm_x_max: 2.899961471557617
-traj_norm_y_min: -0.9972971677780151
-traj_norm_y_max: 0.5519722104072571
+traj_norm_x_min: -2.9987313747406006
+traj_norm_x_max: 2.9999568462371826
+traj_norm_y_min: -1.9997713565826416
+traj_norm_y_max: 1.999977946281433
 graph_norm_x_min: -15.825324058532715
 graph_norm_x_max: 16.95151710510254
 graph_norm_y_min: -14.40243911743164
@@ -92,5 +94,8 @@ target_point_y_min: -7.363075256347656
 target_point_y_max: 0.05854923278093338
 target_point_theta_min: -0.07990014553070068
 target_point_theta_max: 1.6548668146133423
+
+
+
 
 

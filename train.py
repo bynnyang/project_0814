@@ -22,6 +22,8 @@ from torch.utils.data._utils.collate import default_collate
 from torch.utils.data import random_split
 from ruamel.yaml import YAML
 from inference import test_main
+# import torch
+# torch.autograd.set_detect_anomaly(True)
 
 
 decay_lr_factor = 0.3
@@ -34,8 +36,19 @@ show_every = 20
 val_every = 5
 best_minade = float('inf')
 save_dir = './trained_params'
-date_record = "251017"
+date_record = "251126"
 global_step = 0
+
+import warnings
+import pdb
+import traceback
+
+# def debugger_on_warning(message, category, filename, lineno, file=None, line=None):
+#     print(f'\n=== Warning Detected at {filename}:{lineno} ===')
+#     traceback.print_stack()
+#     pdb.set_trace()  # 启动交互式调试
+
+# warnings.showwarning = debugger_on_warning
 
 class MinStepLR(optim.lr_scheduler.StepLR):
     def __init__(self, optimizer, step_size, gamma=0.1, min_lr=1e-6, last_epoch=-1):
@@ -103,35 +116,19 @@ def train(config_obj):
 
 # 随机分割数据集
     dataset_train, dataset_val = random_split(full_dataset, [train_size, val_size], generator=torch.Generator().manual_seed(42))
-    train_loader = DataLoader(dataset_train, batch_size=config_obj.batch_size, shuffle=True, num_workers=config_obj.num_workers, collate_fn=collate_graph)
-    val_loader = DataLoader(dataset_val, batch_size= config_obj.batch_size, shuffle=False, num_workers=config_obj.num_workers, collate_fn=collate_graph)
-
-    max_id = 0
-    for g in full_dataset.graph_dataset:
-        max_id = max(max_id, g.cluster.max().item())
-    # for g in dataset_val.graph_dataset:
-    #     max_id = max(max_id, g.cluster.max().item())
-    config_obj.max_id = max_id
-    yaml = YAML()
-    yaml.preserve_quotes = True    
-    yaml.width = 4096               
-
-    with open("./config/training_real.yaml", "r", encoding="utf-8") as f:
-        cfg_dict = yaml.load(f)
-    cfg_dict["max_id"] = int(max_id)
-    with open("./config/training_real.yaml", "w", encoding="utf-8") as f:
-        yaml.dump(cfg_dict, f)
+    train_loader = DataLoader(dataset_train, batch_size=config_obj.batch_size, shuffle=True, num_workers=config_obj.num_workers)
+    val_loader = DataLoader(dataset_val, batch_size= config_obj.batch_size, shuffle=False, num_workers=config_obj.num_workers)
 
     model = ParkingModelReal(config_obj)
     model = model.to(device=device)
     traj_point_loss_func = None
     if config_obj.decoder_method == "transformer":
-        traj_point_loss_func = TokenTrajPointLoss(config_obj)
+        traj_point_loss_func = TrajPointLoss(config_obj)
     elif config_obj.decoder_method == "gru":
         traj_point_loss_func = TrajPointLoss(config_obj)
 
     
-    optimizer = optim.Adam(model.parameters(), lr=lr, weight_decay=1e-4)
+    optimizer = optim.Adam(model.parameters(), lr=lr, weight_decay=0.0)
     # scheduler = optim.lr_scheduler.StepLR(
     #     optimizer, step_size=decay_lr_every, gamma=decay_lr_factor)
     scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=100)
@@ -140,6 +137,7 @@ def train(config_obj):
 
 
     # training loop
+
     model.train()
     for epoch in range(epochs):
         print(epoch)
@@ -149,37 +147,39 @@ def train(config_obj):
         correct = 0
         total   = 0
         for data in train_loader:
-            # for key, val in data.items():
-            #     if isinstance(val, torch.Tensor):
-            #         data[key] = val.to(device)
-            data.to(device)
+            for key, val in data.items():
+                if isinstance(val, torch.Tensor):
+                    data[key] = val.to(device)
+            # data.to(device)
             optimizer.zero_grad()
             out = model(data, global_step)
-            loss = traj_point_loss_func(out, data, global_step)
+            ss_ratio = model.trajectory_decoder.scheduled_sampling_ratio
+            traj_point_loss_func.update_weights(ss_ratio)
+            loss, loss_dict = traj_point_loss_func(out, data["gt_traj_point"], global_step)
             loss.backward()
             acc_loss += config_obj.batch_size * loss.item()
-            num_samples += data["gt_traj_point_token"].shape[0]
+            num_samples += data["gt_traj_point"].shape[0]
             optimizer.step()
-            model.eval()
-            with torch.no_grad():
-                padding_idx = config_obj.token_nums + config_obj.append_token - 1
-                pre_out = model(data, global_step)
-                pred = pre_out[:, :-1,:]
-                pred_traj_point = pred.reshape(-1, pred.shape[-1])
-                gt_traj_point_token = data['gt_traj_point_token'][:, 1:-1].reshape(-1).to(device)
-                pred_token = pred_traj_point.argmax(dim=-1)
-                mask = gt_traj_point_token != padding_idx
-                correct += (pred_token[mask] == gt_traj_point_token[mask]).sum().item()
-                total   += mask.sum().item()
-            model.train()
+            # model.eval()
+            # with torch.no_grad():
+            #     padding_idx = config_obj.token_nums + config_obj.append_token - 1
+            #     pre_out = model(data, global_step)
+            #     pred = pre_out[:, :-1,:]
+            #     pred_traj_point = pred.reshape(-1, pred.shape[-1])
+            #     gt_traj_point_token = data['gt_traj_point_token'][:, 1:-1].reshape(-1).to(device)
+            #     pred_token = pred_traj_point.argmax(dim=-1)
+            #     mask = gt_traj_point_token != padding_idx
+            #     correct += (pred_token[mask] == gt_traj_point_token[mask]).sum().item()
+            #     total   += mask.sum().item()
+            # model.train()
             global_step += 1
             if (global_step + 1) % show_every == 0:
                 print( f"loss at epoch {epoch} step {global_step}:{loss.item():3f}, lr:{optimizer.state_dict()['param_groups'][0]['lr']: .6f}, time:{time.time() - start_tic: 4f}sec")
         scheduler.step()
-        train_acc = correct / total
+        # train_acc = correct / total
         print(
             f"loss at epoch {epoch}:{acc_loss / num_samples:.3f}, lr:{optimizer.state_dict()['param_groups'][0]['lr']: .6f}, time:{time.time() - start_tic: 4f}sec")
-        print(f'train at epoch {epoch} | train acc: {train_acc:.4f}')   
+        # print(f'train at epoch {epoch} | train acc: {train_acc:.4f}')   
         if (epoch+1) % val_every == 0 and (not epoch < end_epoch):
             print("eval as epoch:{epoch}")
             metrics = get_eval_metric_results(config_obj, model, val_loader, device, 19)

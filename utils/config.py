@@ -6,7 +6,35 @@ from typing import List
 import torch
 import yaml
 from loguru import logger
+from typing import Optional, Tuple, List
 
+@dataclass
+class AttentionConfig:
+    depth: int
+    heads: int
+    dim_head: int
+    mlp_dim: int
+    hidden_dim: int
+
+@dataclass
+class ActorConfiguration:
+    n_modal: int
+    lidar_shape: int
+    target_shape: int
+    action_mask_shape: Optional[int]
+    img_shape: Optional[Tuple[int, int, int]]
+    output_size: int
+    embed_size: int
+    hidden_size: int
+    n_hidden_layers: int
+    n_embed_layers: int
+    img_conv_layers: List[int]
+    img_linear_layers: List[int]
+    k_img_conv: int
+    orthogonal_init: bool
+    use_tanh_output: bool
+    use_tanh_activate: bool
+    attention_configs: Optional[AttentionConfig]
 
 @dataclass
 class Configuration:
@@ -104,6 +132,8 @@ class Configuration:
     k_img_conv: int = None
     img_conv_layers: list = None
     img_linear_layers: list = None
+    traj_x_range: float = None
+    traj_y_range: float = None
 
 
 

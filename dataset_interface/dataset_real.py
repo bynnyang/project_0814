@@ -21,6 +21,10 @@ from utils.vec2d import Vec2d
 from utils.box2d import Box2d
 from utils.box2d import LineSegment
 import cv2
+from env.car_parking_base import CarParking
+from shapely.geometry import LineString
+from env.vehicle import State
+import shutil
 
 class Obs_Processor():
     def __init__(self) -> None:
@@ -66,8 +70,12 @@ class ParkingDataModuleReal(torch.utils.data.Dataset):
         self.target_point = []
         self.history_trajector_vcs = []
         self.render_cnn = BevRender()
+        self.car_parking_date = CarParking()
         self.img_processor = Obs_Processor()
         self.img_cnn_path_list = []
+        self.lidar = []
+        self.action_mask = []
+        self.target = []
        
         self.gnndir = "./interm_data"
         if is_train == 1:
@@ -81,7 +89,7 @@ class ParkingDataModuleReal(torch.utils.data.Dataset):
             self.e2e_dataset = os.path.join("./e2e_dataset", "test", "e2e_dataset.pt")
         self.dataptpath = os.path.join(self.gnndir, f"{self.folder}_intermediate")
 
-        if  os.path.exists(self.e2e_dataset):
+        if os.path.exists(self.e2e_dataset):
             # Load the dataset.pt file
             self.load_dataset()
         else:
@@ -180,6 +188,9 @@ class ParkingDataModuleReal(torch.utils.data.Dataset):
         self.traj_point_token = data['traj_point_token']
         self.target_point = data['target_point']
         self.img_cnn_path_list = data['img_cnn_path_list']
+        self.lidar = data['lidar']
+        self.action_mask = data['action_mask']
+        self.target = data['target']
 
     def save_dataset(self):
         # Save the dataset to dataset.pt file
@@ -189,7 +200,10 @@ class ParkingDataModuleReal(torch.utils.data.Dataset):
             'traj_point': self.traj_point,
             'traj_point_token': self.traj_point_token,
             'target_point': self.target_point,
-            'img_cnn_path_list':self.img_cnn_path_list
+            'img_cnn_path_list':self.img_cnn_path_list,
+            'lidar':self.lidar,
+            'action_mask':self.action_mask,
+            'target':self.target
         }
         torch.save(data, self.e2e_dataset)
 
@@ -224,34 +238,72 @@ class ParkingDataModuleReal(torch.utils.data.Dataset):
 
     def __getitem__(self, index):
  
-        traj = self.traj_point[index].copy()
-        traj[0::2] = (traj[0::2] - self.traj_x_min) / (self.traj_x_max - self.traj_x_min)
-        traj[1::2] = (traj[1::2] - self.traj_y_min) / (self.traj_y_max - self.traj_y_min)
-        gt_traj_point        = torch.from_numpy(traj.astype(np.float32))
+    # ---- 1. 轨迹点归一化 + cos/sin 编码 ----
+        traj = self.traj_point[index].copy().astype(np.float32)   # [T,3] = (x,y,yaw)
+
+        # x,y 归一化到 [-1,1]
+        traj_x = np.clip(traj[:, 0] / self.cfg.traj_x_range, -1.0, 1.0)
+        traj_y = np.clip(traj[:, 1] / self.cfg.traj_y_range, -1.0, 1.0)
+        traj_yaw = traj[:, 2]   # 假设是弧度
+
+        # [T,4] = (x_norm, y_norm, cos(yaw), sin(yaw))
+        gt_traj_point_np = np.stack(
+            [traj_x, traj_y, np.cos(traj_yaw), np.sin(traj_yaw)],
+            axis=-1
+        )   # [T,4]
+        gt_traj_point = torch.from_numpy(gt_traj_point_np.astype(np.float32))
+
+        target_feature = self.target[index].copy()
+        target_feature[0] = target_feature[0] / np.sqrt(self.cfg.traj_x_range**2 + self.cfg.traj_y_range**2)
+        target_feature[0] = np.clip(target_feature[0], -1.0, 1.0)
+        target_feature        = torch.from_numpy(target_feature.astype(np.float32))
         
-        target_point = self.target_point[index].copy()
-        target_point[0] = (target_point[0] - self.target_point_x_min) / (self.target_point_x_max - self.target_point_x_min)
-        target_point[1] = (target_point[1] - self.target_point_y_min) / (self.target_point_y_max - self.target_point_y_min)
-        target_point[2] = (target_point[2] - self.target_point_theta_min) / (self.target_point_theta_max - self.target_point_theta_min)
-      
+        target_point_raw = self.target_point[index].copy().astype(np.float32)  # [N_tp,3] 通常 N_tp=1
+        tp_x = np.clip(target_point_raw[0] / self.cfg.traj_x_range, -1.0, 1.0)
+        tp_y = np.clip(target_point_raw[1] / self.cfg.traj_y_range, -1.0, 1.0)
+        tp_yaw = target_point_raw[2]
+        target_point_np = np.stack(
+            [tp_x, tp_y, np.cos(tp_yaw), np.sin(tp_yaw)],
+            axis=-1
+        )   # [N_tp,4] 一般是 [1,4]
+        target_point = torch.from_numpy(target_point_np.astype(np.float32))
+
         gt_traj_point_token  = torch.from_numpy(np.array(self.traj_point_token[index]))
-        target_point         = torch.from_numpy(target_point.astype(np.float32))
+
         img_path = self.img_cnn_path_list[index]
         img = Image.open(img_path).convert("RGB")
         img = np.array(img)
         processed_img = self.img_processor.process_img(img)
         processed_img         = torch.from_numpy(processed_img.astype(np.float32))
+
+        action_mask = self.action_mask[index].copy()
+        action_mask = torch.from_numpy(action_mask.astype(np.float32))
+
+        lidar = self.lidar[index].copy()
+        lidar = lidar / self.cfg.traj_x_range
+        lidar = torch.from_numpy(lidar.astype(np.float32))
+
+
         data = {
             "image": processed_img,               # Tensor [3,H,W]
-            "gt_traj_point": gt_traj_point,                # Tensor [N]
-            "target_point": target_point,         # Tensor [3]
+            "gt_traj_point": gt_traj_point,                # [T,4] = (x_norm,y_norm,cos,sin)
+            "target_point": target_point,         # [N_tp,4] 一般 [1,4]
             "gt_traj_point_token": gt_traj_point_token,
+            "lidar": lidar,
+            "action_mask": action_mask,
+            "target": target_feature
         }
         return data
     def save_measurements(self, measurements, ego_index, filename, cnt, measurement_tag="measurements"):
         measurements_path = os.path.join(filename, str(ego_index))
         os.makedirs(measurements_path, exist_ok=True)
         measurements_path_final = os.path.join(measurements_path, measurement_tag)
+        if cnt == 0 and measurement_tag == "pred":
+            if os.path.exists(measurements_path_final):
+                shutil.rmtree(measurements_path_final)   # 删除整个 pred 文件夹
+            os.makedirs(measurements_path_final, exist_ok=True)  # 重建空文件夹
+        else:
+            os.makedirs(measurements_path_final, exist_ok=True)
         os.makedirs(measurements_path_final, exist_ok=True)
         measurements_filename = os.path.join(measurements_path_final, "{:04d}.json".format(cnt))
         if measurements == None:
@@ -263,6 +315,7 @@ class ParkingDataModuleReal(torch.utils.data.Dataset):
         pose_ret = {
             'x':pred_point[0],
             'y':pred_point[1],
+            'yaw':pred_point[2],
             'dir': switch,
         }
 
@@ -304,6 +357,8 @@ class ParkingDataModuleReal(torch.utils.data.Dataset):
                 "p1": {}
             }
         for index, each_cluster in enumerate(cluster_frame_in_world):
+            if each_cluster["p0"].x == each_cluster["p1"].x and each_cluster["p0"].y == each_cluster["p1"].y:
+                continue
             each_cluster_vcs = copy.deepcopy(cluster_dict_template)
             each_cluster_vcs["id"] = each_cluster["id"] * switch_side
             each_cluster_vcs["p0"] = each_cluster["p0"].get_pose_in_ego(world2ego_mat)
@@ -311,8 +366,8 @@ class ParkingDataModuleReal(torch.utils.data.Dataset):
             each_cluster_vcs["p1"] = each_cluster["p1"].get_pose_in_ego(world2ego_mat)
             each_cluster_vcs["p1"].y = each_cluster_vcs["p1"].y * switch_side
             cluster_frame_in_vcs.append(each_cluster_vcs)
-        # cluster_frame_in_switch = self.parser_clusters_pred(cluster_frame_in_vcs)
-        # self.save_measurements(cluster_frame_in_switch, ego_index, filename, 0, "pre_cluster")
+        cluster_frame_in_switch = self.parser_clusters_pred(cluster_frame_in_vcs)
+        self.save_measurements(cluster_frame_in_switch, ego_index, filename, 0, "pre_cluster")
 
         return cluster_frame_in_vcs
     
@@ -357,6 +412,19 @@ class ParkingDataModuleReal(torch.utils.data.Dataset):
             history_traj_len = len(history_trajector_vcs)
 
         return history_trajector_vcs, history_traj_len
+    
+    def convert_clusters_to_geometry(sefl, cluster_frame_in_vcs):
+        clusters: List[LineString] = []
+
+        for cl in cluster_frame_in_vcs:
+            p0 = cl["p0"]
+            p1 = cl["p1"]
+
+            # Shapely LineString
+            line = LineString([(p0.x, p0.y), (p1.x, p1.y)])
+            clusters.append(line)
+
+        return clusters
 #########
 
 #自车坐标系下，车头朝向为x轴，右手坐标系，左侧为y轴
@@ -371,6 +439,9 @@ class ParkingDataModuleReal(torch.utils.data.Dataset):
         all_tasks = self.get_all_tasks()
 
         for task_index, task_path in tqdm.tqdm(enumerate(all_tasks)):  # task iteration
+            name = os.path.splitext(os.path.basename(task_path))[0]
+            if name.startswith("e2e_"):
+                continue
             traje_info_obj = TrajectoryInfoParser(task_index, task_path)
             cluster_info_obj = ClusterInfoParser(task_index, task_path)
             judge_ego_pose = traje_info_obj.get_trajectory_point(0)
@@ -382,7 +453,7 @@ class ParkingDataModuleReal(torch.utils.data.Dataset):
                 ego_pose = traje_info_obj.get_trajectory_point(ego_index)
                 world2ego_mat = ego_pose.get_homogeneous_transformation().get_inverse_matrix()
                 # create predict point
-                predict_point_token_gt, predict_point_gt = self.create_predict_point_gt(traje_info_obj, ego_index, world2ego_mat, switch_side, task_path)
+                # predict_point_token_gt, predict_point_gt = self.create_predict_point_gt(traje_info_obj, ego_index, world2ego_mat, switch_side, task_path, 0)
                 # create parking goal
                 fuzzy_parking_goal, parking_goal = self.create_parking_goal_gt(traje_info_obj, world2ego_mat, switch_side)
 
@@ -395,29 +466,71 @@ class ParkingDataModuleReal(torch.utils.data.Dataset):
 
                 history_trajector_vcs, history_traj_len = self.create_history_point(traje_info_obj, ego_index, world2ego_mat, switch_side)
 
-                start_pose = traje_info_obj.get_trajectory_point(0)
-                start_pose_vcs = start_pose.get_pose_in_ego(world2ego_mat)
-                start_pose_vcs.y = start_pose_vcs.y * switch_side
-                start_pose_vcs.yaw = self.get_safe_yaw(start_pose_vcs.yaw) * switch_side
-                # imge_cnn = self.render_cnn.render(start_pose_vcs, history_trajector_vcs, history_traj_len, parking_goal, cluster_frame_info_vcs, ego_index, task_path)
-                measurements_path = os.path.join(task_path, str(ego_index))
-                measurements_path_final = os.path.join(measurements_path, "cnn.png")
+                obervattion_clusters = self.convert_clusters_to_geometry(cluster_frame_info_vcs)
 
-                self.traj_point.append(predict_point_gt)
+                if ego_index == 0:
+                    i = 0
+                    while i < self.cfg.autoregressive_points - 1:
+                        predict_point_token_gt, predict_point_gt = self.create_predict_point_gt(traje_info_obj, ego_index, world2ego_mat, switch_side, task_path, i)
+                        init_state = State([0.0,0.0,0.0])
+                
+                        observation = self.car_parking_date.calc_obervation_feature(init_state, parking_goal, obervattion_clusters)
+                        target_pose = self.parser_measurements_target(parking_goal, switch_side)
+                        self.save_measurements(target_pose, ego_index - i, task_path, 0, "pre_target")
+                        cluster_frame_in_switch = self.parser_clusters_pred(cluster_frame_info_vcs)
+                        self.save_measurements(cluster_frame_in_switch, ego_index - i, task_path, 0, "pre_cluster")
 
-                self.traj_point_token.append(predict_point_token_gt)
-                self.target_point.append(parking_goal)
-                self.fuzzy_target_point.append(fuzzy_parking_goal)
-                self.task_index_list.append(task_index)
-                self.img_cnn_path_list.append(measurements_path_final)
+                        start_pose = traje_info_obj.get_trajectory_point(0)
+                        start_pose_vcs = start_pose.get_pose_in_ego(world2ego_mat)
+                        start_pose_vcs.y = start_pose_vcs.y * switch_side
+                        start_pose_vcs.yaw = self.get_safe_yaw(start_pose_vcs.yaw) * switch_side
+                        # imge_cnn = self.render_cnn.render(start_pose_vcs, history_trajector_vcs, history_traj_len, parking_goal, cluster_frame_info_vcs, ego_index - i, task_path)
+                        measurements_path = os.path.join(task_path, str(ego_index - i))
+                        measurements_path_final = os.path.join(measurements_path, "cnn.png")
 
+                        self.traj_point.append(predict_point_gt)
+
+                        self.traj_point_token.append(predict_point_token_gt)
+                        self.target_point.append(parking_goal)
+                        self.fuzzy_target_point.append(fuzzy_parking_goal)
+                        self.task_index_list.append(task_index)
+                        self.img_cnn_path_list.append(measurements_path_final)
+                        self.lidar.append(observation['lidar'])
+                        self.action_mask.append(observation['action_mask'])
+                        self.target.append(observation['target'])
+                        i = i + 1
+                else:
+                    predict_point_token_gt, predict_point_gt = self.create_predict_point_gt(traje_info_obj, ego_index, world2ego_mat, switch_side, task_path, 0)
+
+                    init_state = State([0.0,0.0,0.0])
+                    
+                    observation = self.car_parking_date.calc_obervation_feature(init_state, parking_goal, obervattion_clusters)
+
+                    start_pose = traje_info_obj.get_trajectory_point(0)
+                    start_pose_vcs = start_pose.get_pose_in_ego(world2ego_mat)
+                    start_pose_vcs.y = start_pose_vcs.y * switch_side
+                    start_pose_vcs.yaw = self.get_safe_yaw(start_pose_vcs.yaw) * switch_side
+                    # imge_cnn = self.render_cnn.render(start_pose_vcs, history_trajector_vcs, history_traj_len, parking_goal, cluster_frame_info_vcs, ego_index, task_path)
+                    measurements_path = os.path.join(task_path, str(ego_index))
+                    measurements_path_final = os.path.join(measurements_path, "cnn.png")
+
+                    self.traj_point.append(predict_point_gt)
+
+                    self.traj_point_token.append(predict_point_token_gt)
+                    self.target_point.append(parking_goal)
+                    self.fuzzy_target_point.append(fuzzy_parking_goal)
+                    self.task_index_list.append(task_index)
+                    self.img_cnn_path_list.append(measurements_path_final)
+                    self.lidar.append(observation['lidar'])
+                    self.action_mask.append(observation['action_mask'])
+                    self.target.append(observation['target'])
 
         self.format_transform()
 
-    def create_predict_point_gt(self, traje_info_obj: TrajectoryInfoParser, ego_index: int, world2ego_mat: np.array, switch_side: float, filename: str) -> List[int]:
+    def create_predict_point_gt(self, traje_info_obj: TrajectoryInfoParser, ego_index: int, world2ego_mat: np.array, switch_side: float, filename: str, index_i) -> List[int]:
         predict_point, predict_point_token = [], []
-        for predict_index in range(self.cfg.autoregressive_points):  # predict iteration
-            ds = 0.1 * predict_index + traje_info_obj.get_trajectory_point(ego_index).s
+        for predict_index in range(self.cfg.autoregressive_points - index_i):  # predict iteration
+            ds = 0.5 * predict_index + traje_info_obj.get_trajectory_point(ego_index).s
             predict_stride_index = self.get_clip_stride_index(predict_index = predict_index, 
                                                                 start_index=ego_index, 
                                                                 max_index=traje_info_obj.total_frames - 1, 
@@ -442,13 +555,23 @@ class ParkingDataModuleReal(torch.utils.data.Dataset):
         predict_point_gt = [item for sublist in predict_point for item in sublist]
         for index, point in enumerate(predict_point):
             point_record = self.parser_measurements_pred(point, switch_side)
-            self.save_measurements(point_record, ego_index, filename,index,"pred")
+            self.save_measurements(point_record, ego_index - index_i, filename, index, "pred")
         append_pad_num = self.cfg.autoregressive_points * self.cfg.item_number - len(predict_point_gt)
         assert append_pad_num >= 0
-        if self.cfg.item_number == 2:
-            predict_point_gt = predict_point_gt + (append_pad_num // 2) * [predict_point_gt[-2], predict_point_gt[-1]]
+        if index_i == 0:
+            if self.cfg.item_number == 2:
+                predict_point_gt = predict_point_gt + (append_pad_num // 2) * [predict_point_gt[-2], predict_point_gt[-1]]
+                predict_point_gt = np.array(predict_point_gt, dtype=np.float32).reshape(-1, 2)
+            else:
+                predict_point_gt = predict_point_gt + (append_pad_num // 3) * [predict_point_gt[-3], predict_point_gt[-2], predict_point_gt[-1]]
+                predict_point_gt = np.array(predict_point_gt, dtype=np.float32).reshape(-1, 3)
         else:
-            predict_point_gt = predict_point_gt + (append_pad_num // 3) * [predict_point_gt[-3], predict_point_gt[-2], predict_point_gt[-1]]
+            if self.cfg.item_number == 2:
+                predict_point_gt = (append_pad_num // 2) * [predict_point_gt[0], predict_point_gt[1]] + predict_point_gt
+                predict_point_gt = np.array(predict_point_gt, dtype=np.float32).reshape(-1, 2)
+            else:
+                predict_point_gt = (append_pad_num // 3) * [predict_point_gt[0], predict_point_gt[1], predict_point_gt[2]] + predict_point_gt
+                predict_point_gt = np.array(predict_point_gt, dtype=np.float32).reshape(-1, 3)
         predict_point_token_gt = [item for sublist in predict_point_token for item in sublist]
         predict_point_token_gt.insert(0, self.BOS_token)
         predict_point_token_gt.append(self.EOS_token)
@@ -501,6 +624,9 @@ class ParkingDataModuleReal(torch.utils.data.Dataset):
         self.target_point = np.array(self.target_point).astype(np.float32)
         self.fuzzy_target_point = np.array(self.fuzzy_target_point).astype(np.float32)
         self.task_index_list = np.array(self.task_index_list).astype(np.int64)
+        self.lidar = np.array(self.lidar).astype(np.float32)
+        self.action_mask = np.array(self.action_mask).astype(np.float32)
+        self.target = np.array(self.target).astype(np.float32)
 
     def get_clip_stride_index(self, predict_index, start_index, max_index, stride):
         return int(np.clip(start_index + stride * (0 + predict_index), 0, max_index))

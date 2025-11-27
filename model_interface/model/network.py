@@ -4,7 +4,7 @@ import torch
 import torch.nn as nn
 from torch import cat
 
-from model_interface.model.attention import AttentionNetwork
+from model_interface.model.attention import AttentionNetworkBuiltin
 
 def orthogonal_init(layer, gain=1.0):
     nn.init.orthogonal_(layer.weight, gain=gain)
@@ -34,6 +34,7 @@ class Network(nn.Module):
 class MultiObsEmbedding(nn.Module):
     def __init__(self, configs):
         super().__init__()
+        self.cfg = configs
         embed_size = configs['embed_size']  #128
         hidden_size = configs['hidden_size'] #256
         activate_func = [nn.LeakyReLU(), nn.Tanh()][configs['use_tanh_activate']]
@@ -54,7 +55,7 @@ class MultiObsEmbedding(nn.Module):
             self.net = nn.Sequential(*layers)
         else:
             attention_configs = configs['attention_configs']
-            self.net = AttentionNetwork(
+            self.net = AttentionNetworkBuiltin(
                 embed_size,
                 attention_configs['depth'],
                 attention_configs['heads'],
@@ -103,69 +104,102 @@ class MultiObsEmbedding(nn.Module):
             self.orthogonal_init()
 
     def orthogonal_init(self):
-        i = 0
-        for layer_name, layer in self.net.state_dict().items():
-            # The output layer is specially dealt
-            gain = 1 if i < len(self.net.state_dict()) - 2 else 0.01
-            if layer_name.endswith("weight") and len(layer.shape)>1:
-                nn.init.orthogonal_(layer, gain=gain)
-            elif layer_name.endswith("bias"):
-                nn.init.constant_(layer, 0)
+        def init_linear_seq(seq: nn.Sequential, last_gain: float = 0.01):
+            # 找出所有 Linear 层
+            linears = [m for m in seq.modules() if isinstance(m, nn.Linear)]
+            if not linears:
+                return
+            for i, m in enumerate(linears):
+                gain = 1.0 if i < len(linears) - 1 else last_gain
+                nn.init.orthogonal_(m.weight, gain=gain)
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0.0)
 
-        for layer_name, layer in self.embed_lidar.state_dict().items():
-            # The output layer is specially dealt
-            gain = 1
-            if layer_name.endswith("weight"):
-                nn.init.orthogonal_(layer, gain=gain)
-            elif layer_name.endswith("bias"):
-                nn.init.constant_(layer, 0)
+        # 1) 主干网络 self.net
+        # 如果是 MLP（非 attention），可以把最后一层 gain 设小一点
+        if not self.use_attention and isinstance(self.net, nn.Sequential):
+            init_linear_seq(self.net, last_gain=0.01)
+        else:
+            # attention 的内部结构比较复杂，这里就统一 gain=1
+            for m in self.net.modules():
+                if isinstance(m, nn.Linear):
+                    nn.init.orthogonal_(m.weight, gain=1.0)
+                    if m.bias is not None:
+                        nn.init.constant_(m.bias, 0.0)
 
-        for layer_name, layer in self.embed_tgt.state_dict().items():
-            # The output layer is specially dealt
-            gain = 1
-            if layer_name.endswith("weight"):
-                nn.init.orthogonal_(layer, gain=gain)
-            elif layer_name.endswith("bias"):
-                nn.init.constant_(layer, 0)
+        # 2) lidar
+        if hasattr(self, "embed_lidar"):
+            for m in self.embed_lidar.modules():
+                if isinstance(m, nn.Linear):
+                    nn.init.orthogonal_(m.weight, gain=1.0)
+                    if m.bias is not None:
+                        nn.init.constant_(m.bias, 0.0)
 
-        if self.use_action_mask:
-            for layer_name, layer in self.embed_am.state_dict().items():
-                # The output layer is specially dealt
-                gain = 1
-                if layer_name.endswith("weight"):
-                    nn.init.orthogonal_(layer, gain=gain)
-                elif layer_name.endswith("bias"):
-                    nn.init.constant_(layer, 0)
-        
-        if self.use_img:
-            for layer_name, layer in self.re_embed_img.state_dict().items():
-                # The output layer is specially dealt
-                gain = 1
-                if layer_name.endswith("weight"):
-                    nn.init.orthogonal_(layer, gain=gain)
-                elif layer_name.endswith("bias"):
-                    nn.init.constant_(layer, 0)
-        
-        if self.input_action:
-            for layer_name, layer in self.embed_action.state_dict().items():
-                # The output layer is specially dealt
-                gain = 1
-                if layer_name.endswith("weight"):
-                    nn.init.orthogonal_(layer, gain=gain)
-                elif layer_name.endswith("bias"):
-                    nn.init.constant_(layer, 0)
+        # 3) target
+        if hasattr(self, "embed_tgt"):
+            for m in self.embed_tgt.modules():
+                if isinstance(m, nn.Linear):
+                    nn.init.orthogonal_(m.weight, gain=1.0)
+                    if m.bias is not None:
+                        nn.init.constant_(m.bias, 0.0)
+
+        # 4) action mask
+        if self.use_action_mask and hasattr(self, "embed_am"):
+            for m in self.embed_am.modules():
+                if isinstance(m, nn.Linear):
+                    nn.init.orthogonal_(m.weight, gain=1.0)
+                    if m.bias is not None:
+                        nn.init.constant_(m.bias, 0.0)
+
+        # 5) re_embed_img（不要动预训练 encoder）
+        if self.use_img and hasattr(self, "re_embed_img"):
+            for m in self.re_embed_img.modules():
+                if isinstance(m, nn.Linear):
+                    nn.init.orthogonal_(m.weight, gain=1.0)
+                    if m.bias is not None:
+                        nn.init.constant_(m.bias, 0.0)
+
+        # 6) input_action
+        if self.input_action and hasattr(self, "embed_action"):
+            for m in self.embed_action.modules():
+                if isinstance(m, nn.Linear):
+                    nn.init.orthogonal_(m.weight, gain=1.0)
+                    if m.bias is not None:
+                        nn.init.constant_(m.bias, 0.0)
 
     def load_img_encoder(self, path, device, require_grad = False):
-        ae = torch.load(path, map_location=device, weights_only=False)
+        device = torch.device(device)
+
+        # 1. 加载 checkpoint，直接 map 到最终 device
+        ckpt = torch.load(path, map_location=device)
+
+        # 2. 新建 AE
+        ae = AE_Conv(img_shape=self.cfg['img_shape'],
+                     k=self.cfg['k_img_conv'],
+                     embed_size=self.cfg['embed_size'],
+                     c_conv_list=self.cfg['img_conv_layers'],
+                     size_fc_list=self.cfg['img_linear_layers'],
+                     use_tanh=False)
+
+        # 3. 加载参数
+        ae.load_state_dict(ckpt["state_dict"])
+
+        # 4. 移到目标设备
+        ae.to(device)
+
+        # 5. 冻结/不冻
+        if not require_grad:
+            for p in ae.parameters():
+                p.requires_grad = False
+
+        # 6. 抽取 encoder
         self.embed_img = ae.encoder
-        for param in self.embed_img.parameters():
-            param.requires_grad = require_grad
 
     def forward(self, x:dict):
         '''
             x: dictionary of different input modal. Includes:
 
-            `img` : image with shape (n, c, w, h)
+            `image` : image with shape (n, c, w, h)
             `target` : tensor in shape (n, t)
             `lidar` : tensor in shape (n, l)
 
@@ -178,7 +212,7 @@ class MultiObsEmbedding(nn.Module):
             features.append(feature_am)
 
         if self.use_img:
-            feature_img, _ = self.embed_img(x['img'])
+            feature_img, _ = self.embed_img(x['image'])
             feature_img = self.re_embed_img(feature_img)
             features.append(feature_img)
 

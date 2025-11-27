@@ -88,8 +88,38 @@ class AttentionNetwork(nn.Module):
     def forward(self, x):
         # x = x + self.view_embed
         x = self.encoder(x)
-        x = rearrange(x, 'b n d -> b (n d)')
-        return self.output(x)
+        # x = rearrange(x, 'b n d -> b (n d)')
+        return x   #self.output(x)
+    
+class AttentionNetworkBuiltin(nn.Module):
+    def __init__(self, dim, depth, heads, dim_head, mlp_dim,
+                 n_features, hidden_dim, output_dim, dropout=0.0):
+        super().__init__()
+
+        # 可选：确保 dim 可以被 heads 整除（否则官方 MultiheadAttention 直接报错）
+        assert dim % heads == 0, "PyTorch MultiheadAttention 要求 dim % heads == 0"
+
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=dim,
+            nhead=heads,
+            dim_feedforward=mlp_dim,
+            dropout=dropout,
+            activation="gelu",      # 你原来用 Tanh，这里也可以改成 "tanh"
+            batch_first=True,       # 输入输出都是 [batch, seq, dim]
+            norm_first=True,        # 和你自己的 PreNorm 行为一致
+        )
+
+        self.encoder = nn.TransformerEncoder(
+            encoder_layer,
+            num_layers=depth,
+        )
+
+    def forward(self, x):
+        # x: [b, n_features, dim]
+        # 如果你想用 view_embed，就解开这行：
+        # x = x + self.view_embed      # [1, n, dim] 会自动 broadcast 到 batch 维
+        x = self.encoder(x)           # [b, n, dim]
+        return x
 
 
     

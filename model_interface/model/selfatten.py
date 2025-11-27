@@ -137,7 +137,7 @@ class MultiLayerSelfAttention(nn.Module):
             self.layers.append(SelfAttentionLayer(global_graph_width, global_graph_width, num_heads))
 
     def forward(self, x, valid_len):
-        valid_len = valid_len.to(torch.int64)
+        valid_len = valid_len.to(torch.int64) 
         for layer in self.layers:
             x = layer(x, valid_len)
         return x

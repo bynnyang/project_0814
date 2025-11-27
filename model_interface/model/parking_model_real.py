@@ -4,10 +4,12 @@ from torch import nn
 from model_interface.model.bev_encoder import BevEncoder, BevQuery
 from model_interface.model.gru_trajectory_decoder import GRUTrajectoryDecoder
 from model_interface.model.trajectory_decoder import TrajectoryDecoder
-from model_interface.model.trajectory_decoder import TrajectoryDecoderONNX
+# from model_interface.model.trajectory_decoder import TrajectoryDecoderONNX
 from model_interface.model.subgraph import SubGraph
 from model_interface.model.selfatten import MultiLayerSelfAttention
 from utils.config import Configuration
+from vehicle_config import *
+from model_interface.model.network import MultiObsEmbedding
 
 
 
@@ -15,10 +17,10 @@ class TrajInputEmbedding(nn.Module):
     def __init__(self, d_model):
         super().__init__()
         # 把 3 维 (x,y,θ) 映射到 d_model
-        self.proj = nn.Linear(3, d_model)
+        self.proj = nn.Linear(4, d_model)
 
     def forward(self, x):
-        # x: [B, T, 3]
+        
         z = self.proj(x)                                # [B, T, d_model]
         return z
 
@@ -28,23 +30,17 @@ class ParkingModelReal(nn.Module):
         super().__init__()
 
         self.cfg = cfg
-
-        # # Camera Encoder
-        # self.lss_bev_model = LssBevModel(self.cfg)
-        # self.image_res_encoder = BevEncoder(in_channel=self.cfg.bev_encoder_in_channel)
-
-        # # Target Encoder
-        # self.target_res_encoder = BevEncoder(in_channel=1)
-
-        # # BEV Query
-        # self.bev_query = BevQuery(self.cfg)
-
-        # self.polyline_vec_shape = self.cfg.in_channels * (2 ** self.cfg.num_subgraph_layers)
-        self.subgraph = SubGraph(
-            self.cfg.in_channels, self.cfg.num_subgraph_layers, self.cfg.subgraph_width, self.cfg.max_id)
-        self.self_atten_layer = MultiLayerSelfAttention(
-            self.cfg.subgraph_width, self.cfg.global_graph_width)
         
+        self.actor_cfg = ACTOR_CONFIGS
+
+        self.multi_encoder = MultiObsEmbedding(self.actor_cfg)
+        
+        require_grad = UPDATE_IMG_ENCODE
+
+        path = './trained_params/ae_recons/ae_epoch_64.valloss_0.0181.imgae1125.pth'
+        
+        self.multi_encoder.load_img_encoder(path, self.cfg.device, require_grad)
+         
         self.target_point_encoder = TrajInputEmbedding(self.cfg.global_graph_width)
 
         # Trajectory Decoder
@@ -53,32 +49,26 @@ class ParkingModelReal(nn.Module):
     def forward(self, data, global_step):
         # Encoder
         # bev_feature, pred_depth, bev_target = self.encoder(data, mode="train")
-        time_step_len = int(data["time_step_len"][0])
-        valid_lens = data["valid_len"]
-        sub_graph_out = self.subgraph(data)
-        x = sub_graph_out.view(-1, time_step_len, self.cfg.subgraph_width)
-        out = self.self_atten_layer(x, valid_lens)
+
+        encoder_out = self.multi_encoder(data)
+      
 
         point_out = self.target_point_encoder(data["target_point"].to(self.cfg.device))
 
         # Decoder
-        pred_traj_point = self.trajectory_decoder(out, point_out, data['gt_traj_point_token'].to(self.cfg.device), global_step)
+        pred_acions = self.trajectory_decoder(encoder_out, point_out, data['gt_traj_point'].to(self.cfg.device), global_step)
 
-        return pred_traj_point
+        return pred_acions
 
     def predict_transformer(self, data, predict_token_num):
         # Encoder
-        # bev_feature, pred_depth, bev_target = self.encoder(data, mode="predict")
-        time_step_len = int(data["time_step_len"][0])
-        valid_lens = data["valid_len"]
-        sub_graph_out = self.subgraph(data)
-        x = sub_graph_out.view(-1, time_step_len, self.cfg.subgraph_width)
-        out = self.self_atten_layer(x, valid_lens)
+    
+        encoder_out = self.multi_encoder(data)
         point_out = self.target_point_encoder(data["target_point"].to(self.cfg.device))
         # Auto Regressive Decoder
         autoregressive_point = data['gt_traj_point_token'].to(self.cfg.device) # During inference, we regard BOS as gt_traj_point_token.
         for _ in range(predict_token_num):
-            pred_traj_point = self.trajectory_decoder.predict(out, point_out, autoregressive_point)
+            pred_traj_point = self.trajectory_decoder.predict(encoder_out, point_out, autoregressive_point)
             autoregressive_point = torch.cat([autoregressive_point, pred_traj_point], dim=1)
 
         return autoregressive_point
@@ -161,8 +151,8 @@ class ParkingModelReal(nn.Module):
     
     def get_trajectory_decoder(self):
         if self.cfg.decoder_method == "transformer":
-            # trajectory_decoder = TrajectoryDecoder(self.cfg)
-            trajectory_decoder = TrajectoryDecoderONNX(self.cfg)
+            trajectory_decoder = TrajectoryDecoder(self.cfg)
+            # trajectory_decoder = TrajectoryDecoderONNX(self.cfg)
         elif self.cfg.decoder_method == "gru":
             trajectory_decoder = GRUTrajectoryDecoder(self.cfg)
         else:
