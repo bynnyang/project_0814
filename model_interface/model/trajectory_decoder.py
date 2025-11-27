@@ -47,6 +47,7 @@ class TrajectoryDecoder(nn.Module):
             self.scheduled_sampling_ratio *= self.scheduled_sampling_decay_rate
             # 确保比率不低于最小值
             self.scheduled_sampling_ratio = max(self.scheduled_sampling_ratio, 0.01)
+            print(f"scheduled_sampling_ratio , {self.scheduled_sampling_ratio:6f}")
 
     def create_mask(self, tgt):
         tgt_mask = (torch.triu(torch.ones((tgt.shape[1], tgt.shape[1]), device=self.cfg.device)) == 1).transpose(0, 1)

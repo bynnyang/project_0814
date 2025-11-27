@@ -188,6 +188,8 @@ class TrajPointLoss(nn.Module):
             "yaw_loss_local": yaw_loss_local.detach(),
             "pos_loss_global": pos_loss_global.detach(),
             "yaw_loss_global": yaw_loss_global.detach(),
+            "w_local": self.w_local,
+            "w_global": self.w_global
         }
 
         if (global_step + 1) % 100 == 0:
