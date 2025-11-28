@@ -470,7 +470,7 @@ class ParkingDataModuleReal(torch.utils.data.Dataset):
 
                 if ego_index == 0:
                     i = 0
-                    while i < self.cfg.autoregressive_points - 1:
+                    while i < 1: #i < self.cfg.autoregressive_points - 1:
                         predict_point_token_gt, predict_point_gt = self.create_predict_point_gt(traje_info_obj, ego_index, world2ego_mat, switch_side, task_path, i)
                         init_state = State([0.0,0.0,0.0])
                 
