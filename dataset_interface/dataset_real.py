@@ -311,12 +311,13 @@ class ParkingDataModuleReal(torch.utils.data.Dataset):
         with open(measurements_filename, 'w') as json_file:
             json.dump(measurements, json_file, indent=4)
 
-    def parser_measurements_pred(self, pred_point,switch):
+    def parser_measurements_pred(self, pred_point, switch, key_index):
         pose_ret = {
             'x':pred_point[0],
             'y':pred_point[1],
             'yaw':pred_point[2],
             'dir': switch,
+            'key_index': key_index,
         }
 
         return pose_ret
@@ -529,13 +530,31 @@ class ParkingDataModuleReal(torch.utils.data.Dataset):
 
     def create_predict_point_gt(self, traje_info_obj: TrajectoryInfoParser, ego_index: int, world2ego_mat: np.array, switch_side: float, filename: str, index_i) -> List[int]:
         predict_point, predict_point_token = [], []
-        for predict_index in range(self.cfg.autoregressive_points - index_i):  # predict iteration
-            ds = 0.5 * predict_index + traje_info_obj.get_trajectory_point(ego_index).s
+        step = 0.5  # 你的插值弧长
+        # 起始点的 s 和段索引
+        cur_edge_index = ego_index
+        cur_s = traje_info_obj.get_trajectory_point(ego_index).s
+        ego_pose_in_ego = CustomizePose(0.0, 0.0, 0, 0, 0.0, 0.0, cur_s)
+        ego_pose_in_ego.y = ego_pose_in_ego.y * switch_side
+        ego_pose_in_ego.yaw = self.get_safe_yaw(ego_pose_in_ego.yaw) * switch_side
+        tokenize_ret = tokenize_traj_point(ego_pose_in_ego.x, ego_pose_in_ego.y, 
+                                                ego_pose_in_ego.yaw, self.cfg.token_nums, self.cfg.xy_max)
+        tokenize_ret_process = tokenize_ret[:2] if self.cfg.item_number == 2 else tokenize_ret
+        predict_point_token.append(tokenize_ret_process)
+        if self.cfg.item_number == 2:
+            predict_point.append([ego_pose_in_ego.x, ego_pose_in_ego.y])
+        else:
+            predict_point.append([ego_pose_in_ego.x, ego_pose_in_ego.y, ego_pose_in_ego.yaw])
+
+        for predict_index in range((self.cfg.autoregressive_points - 1) - index_i):  # predict iteration  初始点已经加进去了，所以autoregressive_points要减1
             predict_stride_index = self.get_clip_stride_index(predict_index = predict_index, 
                                                                 start_index=ego_index, 
                                                                 max_index=traje_info_obj.total_frames - 1, 
                                                                 stride=self.cfg.traj_downsample_stride)
-            predict_pose_in_world = traje_info_obj.get_trajectory_point_by_s(ego_index, ds)
+            predict_pose_in_world, cur_s, cur_edge_index = traje_info_obj.get_next_point_with_step(
+                edge_index=cur_edge_index,
+                prev_s=cur_s,
+                step=step)
             predict_pose_in_ego = predict_pose_in_world.get_pose_in_ego(world2ego_mat)
             predict_pose_in_ego.y = predict_pose_in_ego.y * switch_side
             predict_pose_in_ego.yaw = self.get_safe_yaw(predict_pose_in_ego.yaw) * switch_side
@@ -549,12 +568,12 @@ class ParkingDataModuleReal(torch.utils.data.Dataset):
             tokenize_ret_process = tokenize_ret[:2] if self.cfg.item_number == 2 else tokenize_ret
             predict_point_token.append(tokenize_ret_process)
 
-            if predict_pose_in_world.s == traje_info_obj.get_trajectory_point(traje_info_obj.total_frames - 1).s or predict_index == self.cfg.autoregressive_points - 1:
+            if predict_pose_in_world.s == traje_info_obj.get_trajectory_point(traje_info_obj.total_frames - 1).s or predict_index == ((self.cfg.autoregressive_points - 1) - 1):
                 break
 
         predict_point_gt = [item for sublist in predict_point for item in sublist]
         for index, point in enumerate(predict_point):
-            point_record = self.parser_measurements_pred(point, switch_side)
+            point_record = self.parser_measurements_pred(point, switch_side, traje_info_obj.key_index)
             self.save_measurements(point_record, ego_index - index_i, filename, index, "pred")
         append_pad_num = self.cfg.autoregressive_points * self.cfg.item_number - len(predict_point_gt)
         assert append_pad_num >= 0

@@ -44,8 +44,10 @@ class TrajectoryInfoParser:
     def __init__(self, task_index, task_path):
         self.task_index = task_index
         self.task_path = task_path
+        self.key_index = []
         self.total_frames = self._get_trajectory_num()
         self.trajectory_list = self.make_trajectory()
+        self.key_s_list = [self.trajectory_list[i].s for i in self.key_index]
         self.progress_list = self.get_progress_list()
         self.candidate_target_pose = self.get_candidate_target_pose()
 
@@ -68,18 +70,99 @@ class TrajectoryInfoParser:
         # 插值并转换回弧度
         result_deg = a_deg + diff * t
         return result_deg
+    
+    def get_next_point_with_step(self, edge_index: int, prev_s: float, step: float) -> tuple["CustomizePose", float, int]:
+        """
+        从上一个采样点的弧长 prev_s 出发，以 step 为步长向前前进，
+        若途中跨过关键点，则优先落在关键点上。
+        返回: (new_point, new_s, new_edge_index)
+        """
+        # 终点保护：已经在或超过最后一点，就不再往前
+        last_s = self.trajectory_list[-1].s
+        if prev_s >= last_s:
+            return self.trajectory_list[-1], last_s, self.total_frames - 1
 
-    def get_trajectory_point_by_s(self, edge_index, ds) -> CustomizePose:
+        # 理想目标弧长
+        raw_target_s = prev_s + step
+        
+        if raw_target_s >= self.trajectory_list[-1].s:
+            return self.trajectory_list[-1], self.trajectory_list[-1].s, self.total_frames - 1
+        # 不超过轨迹终点
+        raw_target_s = min(raw_target_s, last_s)
+
+        # 默认目标弧长
+        target_s = raw_target_s
+
+        # 关键点“吸附”：若有 key_s 落在 (prev_s, raw_target_s] 之间，就优先落在第一个 key_s 上
+        for s_k in self.key_s_list:
+            if prev_s < s_k <= raw_target_s + 1e-6:
+                target_s = s_k
+                break
+
+        # 找到 target_s 所在的原始轨迹段 [index, index+1]
+        # 从 edge_index 往前扫，加速
+        lerp_index = edge_index
+        # 确保不越界
+        if lerp_index < 0:
+            lerp_index = 0
+        if lerp_index > self.total_frames - 2:
+            lerp_index = self.total_frames - 2
+
+        for index in range(lerp_index, self.total_frames - 1):
+            s_left = self.trajectory_list[index].s
+            s_right = self.trajectory_list[index + 1].s
+            if s_left <= target_s <= s_right + 1e-6:
+                lerp_index = index
+                break
+
+        point_left = self.trajectory_list[lerp_index]
+        point_right = self.trajectory_list[lerp_index + 1]
+
+        denom = max(point_right.s - point_left.s, 1e-6)
+        ratio = (target_s - point_left.s) / denom
+
+        new_x = point_left.x + ratio * (point_right.x - point_left.x)
+        new_y = point_left.y + ratio * (point_right.y - point_left.y)
+        new_yaw = self.lerp_angle_degrees(point_left.yaw, point_right.yaw, ratio)
+        new_s = target_s
+
+        new_point = CustomizePose(new_x, new_y, 0, 0, new_yaw, 0, new_s)
+        return new_point, new_s, lerp_index
+
+    def get_trajectory_point_by_s(self, edge_index, ds, step=0.5) -> CustomizePose:
         if ds == self.trajectory_list[edge_index].s :
             return self.trajectory_list[edge_index]
         
         if ds >= self.trajectory_list[-1].s:
             return self.trajectory_list[-1]
         
-        lerp_index = 0
-        for index in range(edge_index, self.total_frames-1):
-            if (ds >= self.trajectory_list[index].s) and (ds < self.trajectory_list[index + 1].s):
+        # 起点弧长（从哪个 index 开始走）
+        start_s = self.trajectory_list[edge_index].s
+
+        # 上一步的弧长（因为你的ds是 start_s + step * predict_index）
+        prev_ds = max(start_s, ds - step)
+
+        # 默认目标弧长是 ds，本次可能会被关键点“吸附”
+        ds_snap = ds
+
+        for s_k in self.key_s_list:
+            if prev_ds < s_k <= ds +1e-6:
+                ds_snap = s_k
+                # 找到第一个就可以break，保证按轨迹方向从近到远
+                break
+
+        target_s = ds_snap
+
+        if target_s == self.trajectory_list[edge_index].s:
+            return self.trajectory_list[edge_index]
+        
+        lerp_index = edge_index
+        for index in range(edge_index, self.total_frames - 1):
+            s_left = self.trajectory_list[index].s
+            s_right = self.trajectory_list[index + 1].s
+            if (target_s >= s_left) and (target_s < s_right):
                 lerp_index = index
+                break
 
         point_index_left =  self.trajectory_list[lerp_index]
         point_index_right =  self.trajectory_list[lerp_index+1]
@@ -172,8 +255,11 @@ class TrajectoryInfoParser:
         trajectory_list = []
         for frame in range(0, self.total_frames):
             data = get_json_content(self.get_measurement_path(frame))
+            data_next = get_json_content(self.get_measurement_path(min(frame+1, self.total_frames - 1)))
             cur_pose = CustomizePose(x=data["x"], y=data["y"], z=0.0, roll=0.0, yaw=data["yaw"]/3.14*180, pitch=0.0, s = data["s"])
             trajectory_list.append(cur_pose)
+            if data["gear"] != 3.0 and data_next["gear"] != 3.0 and data["gear"] != data_next["gear"] and data["s"] > 0.2:
+                self.key_index.append(frame)
         return trajectory_list
 
     def get_progress_list(self) -> List[float]:
