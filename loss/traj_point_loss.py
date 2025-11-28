@@ -91,7 +91,7 @@ class TrajPointLoss(nn.Module):
         delta = delta_norm * VALID_STEER[1]            # [-steer_max, steer_max]
 
         # 3. 单轨运动学模型离散更新
-        dt = 0.5
+        dt = STEP_TIME_AND_LENGHT
         L  = WHEEL_BASE
 
         x_next   = x + v * torch.cos(yaw) * dt

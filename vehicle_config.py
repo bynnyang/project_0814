@@ -7,6 +7,7 @@ FRONT_HANG = 0.68  # front hang length
 REAR_HANG = 0.704  # rear hang length
 LENGTH = WHEEL_BASE+FRONT_HANG+REAR_HANG
 WIDTH = 1.781  # width
+STEP_TIME_AND_LENGHT = 0.2
 
 from shapely.geometry import LinearRing
 VehicleBox = LinearRing([

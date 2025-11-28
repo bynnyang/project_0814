@@ -25,6 +25,7 @@ from env.car_parking_base import CarParking
 from shapely.geometry import LineString
 from env.vehicle import State
 import shutil
+from vehicle_config import *
 
 class Obs_Processor():
     def __init__(self) -> None:
@@ -89,7 +90,7 @@ class ParkingDataModuleReal(torch.utils.data.Dataset):
             self.e2e_dataset = os.path.join("./e2e_dataset", "test", "e2e_dataset.pt")
         self.dataptpath = os.path.join(self.gnndir, f"{self.folder}_intermediate")
 
-        if os.path.exists(self.e2e_dataset):
+        if False and os.path.exists(self.e2e_dataset):
             # Load the dataset.pt file
             self.load_dataset()
         else:
@@ -530,7 +531,7 @@ class ParkingDataModuleReal(torch.utils.data.Dataset):
 
     def create_predict_point_gt(self, traje_info_obj: TrajectoryInfoParser, ego_index: int, world2ego_mat: np.array, switch_side: float, filename: str, index_i) -> List[int]:
         predict_point, predict_point_token = [], []
-        step = 0.5  # 你的插值弧长
+        step = STEP_TIME_AND_LENGHT  # 你的插值弧长
         # 起始点的 s 和段索引
         cur_edge_index = ego_index
         cur_s = traje_info_obj.get_trajectory_point(ego_index).s

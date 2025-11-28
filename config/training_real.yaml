@@ -20,7 +20,7 @@ num_workers: 8
 # resume_path: ""
 
 ##################### Data Process #####################
-autoregressive_points: 7
+autoregressive_points: 16
 traj_downsample_stride: 3
 item_number: 3
 token_nums: 600
@@ -80,8 +80,8 @@ global_graph_width: 128
 max_id: 50
 traj_norm_x_min: -2.9987313747406006
 traj_norm_x_max: 2.9999568462371826
-traj_norm_y_min: -1.9997713565826416
-traj_norm_y_max: 1.999977946281433
+traj_norm_y_min: -2.5987842082977295
+traj_norm_y_max: 2.5999696254730225
 graph_norm_x_min: -15.825324058532715
 graph_norm_x_max: 16.95151710510254
 graph_norm_y_min: -14.40243911743164
