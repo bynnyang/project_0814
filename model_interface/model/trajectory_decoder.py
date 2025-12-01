@@ -377,20 +377,22 @@ class TrajectoryDecoderONNX(nn.Module):
         self.PAD_token = self.cfg.token_nums + self.cfg.append_token - 1
 
         self.scheduled_sampling_ratio = 1.0
-        self.scheduled_sampling_decay_step = 1000
-        self.scheduled_sampling_decay_rate = 0.98
-        self.embedding = nn.Embedding(np.int32(self.cfg.token_nums + self.cfg.append_token), np.int32(self.cfg.tf_de_dim))
+        self.scheduled_sampling_decay_step = 100
+        self.scheduled_sampling_decay_rate = 0.97
+
+        self.traj_embedding = nn.Linear(4, self.cfg.tf_de_dim)
         self.pos_drop = nn.Dropout(self.cfg.tf_de_dropout)
 
-        item_cnt = self.cfg.autoregressive_points
-        self.pos_embed = nn.Parameter(torch.randn(1, self.cfg.item_number * item_cnt + 2, self.cfg.tf_de_dim) * .02)
+        item_cnt = self.cfg.autoregressive_points - 1
 
+        self.pos_embed = nn.Parameter(torch.randn(1, item_cnt, self.cfg.tf_de_dim) * .02)
         # 使用 ONNX-friendly Transformer
-        tf_layer = ONNXTransformerDecoderLayer(d_model=self.cfg.tf_de_dim, n_heads=self.cfg.tf_de_heads)
+        tf_layer = ONNXTransformerDecoderLayer(d_model=self.cfg.tf_de_dim, n_heads=self.cfg.tf_de_heads, d_ff=512, dropout=0.05)
         self.tf_decoder = ONNXTransformerDecoder(tf_layer, num_layers=self.cfg.tf_de_layers)
-
-        self.output = nn.Linear(self.cfg.tf_de_dim, self.cfg.token_nums + self.cfg.append_token)
-        self.out_drop = nn.Dropout(self.cfg.tf_de_dropout)
+        self.output_layer = nn.Sequential(
+            nn.Linear(self.cfg.tf_de_dim, 2),
+            nn.Tanh()
+        )
 
         self.init_weights()
 
@@ -421,7 +423,7 @@ class TrajectoryDecoderONNX(nn.Module):
         additive = causal.clone().to(dtype=torch.float32)
         additive = additive.masked_fill(additive == 0, -1e9).masked_fill(additive == 1, 0.0)
         tgt_mask = additive.unsqueeze(0).unsqueeze(0)  # (1,1,L,L)
-        tgt_padding_mask = (tgt == self.PAD_token)
+        tgt_padding_mask = (tgt == self.PAD_token).all(dim=-1)
         return tgt_mask, tgt_padding_mask
     
     @staticmethod
@@ -431,8 +433,51 @@ class TrajectoryDecoderONNX(nn.Module):
         if mem.size(1) == 0:
             return torch.zeros(mem.size(0), 1, mem.size(2), device=mem.device, dtype=mem.dtype)
         return mem
+    
+    def kinematic_step(self, prev_point, action):
+        """
+        prev_point: [B, 4] = (x_norm, y_norm, cos_yaw, sin_yaw)
+        action:     [B, 2] = (v_norm, delta_norm)  (tanh 输出)
+        return:     [B, 4] = 下一步的 (x_norm, y_norm, cos_yaw, sin_yaw)
+        """
 
-    def decoder(self, encoder_out, tgt_embedding, tgt_mask, tgt_padding_mask):
+        # 1. 反归一化上一步的状态
+        x = prev_point[:, 0] * self.cfg.traj_x_range       # [B]
+        y = prev_point[:, 1] * self.cfg.traj_y_range       # [B]
+        cos_yaw = prev_point[:, 2]
+        sin_yaw = prev_point[:, 3]
+        yaw = torch.atan2(sin_yaw, cos_yaw)           # [-pi, pi]
+
+        # 2. 反归一化动作（根据你自己的映射方式调整）
+        # 假设 last_step_pred_action ∈ [-1,1]（tanh 输出）
+        delta_norm    = action[:, 0]
+        v_norm = action[:, 1]
+
+        v     = v_norm * VALID_SPEED[1]      # 映射到 [0, v_max]，你也可以直接 v = v_norm * cfg.v_max
+        delta = delta_norm * VALID_STEER[1]            # [-steer_max, steer_max]
+
+        # 3. 单轨运动学模型离散更新
+        dt = STEP_TIME_AND_LENGHT
+        L  = WHEEL_BASE
+
+        x_next   = x + v * torch.cos(yaw) * dt
+        y_next   = y + v * torch.sin(yaw) * dt
+        yaw_next = yaw + v / L * torch.tan(delta) * dt
+
+        # 4. wrap yaw 到 [-pi, pi]（可微写法）
+        yaw_next = torch.atan2(torch.sin(yaw_next), torch.cos(yaw_next))
+
+        # 5. 再归一化 x,y，并重新编码 yaw 为 cos/sin
+        x_next_norm = x_next / self.cfg.traj_x_range
+        y_next_norm = y_next / self.cfg.traj_y_range
+
+        cos_next = torch.cos(yaw_next)
+        sin_next = torch.sin(yaw_next)
+
+        pred_point = torch.stack([x_next_norm, y_next_norm, cos_next, sin_next], dim=-1)  # [B,4]
+        return pred_point
+
+    def decoder(self, encoder_out, tgt_embedding, tgt_mask, tgt_padding_mask = None):
         # encoder_out = encoder_out  # memory 可以保留原形状
         encoder_out_safe = self._ensure_nonempty_memory(encoder_out)
         pred_traj_points = self.tf_decoder(tgt=tgt_embedding,
@@ -449,83 +494,88 @@ class TrajectoryDecoderONNX(nn.Module):
         
         # 保存原始目标序列
         original_tgt = tgt.clone()
-        tgt = tgt[:, :-1]
-        batch_size, seq_len = tgt.size()
+        tgt = tgt[:, :-1, :]
+        batch_size, seq_len, feat_dim = tgt.size()
+        assert feat_dim == 4
         output_sequence = torch.zeros_like(tgt)
-        output_sequence[:, 0] = tgt[:, 0]
+        output_sequence[:, 0,:] = tgt[:, 0, :]
 
         for t in range(1, seq_len):
             # 创建当前输入序列
-            current_input = output_sequence.clone()[:, :t]
+            current_input = output_sequence[:, :t, :].detach()
             
             # 创建掩码
             tgt_mask, tgt_padding_mask = self.create_mask(current_input)
             
             # 嵌入
-            tgt_embedding = self.embedding(current_input)
+            tgt_embedding = self.traj_embedding(current_input)
             step_global_context = global_context.unsqueeze(1).repeat(1, t, 1)
             tgt_embedding = tgt_embedding + step_global_context
             tgt_embedding = self.pos_drop(tgt_embedding + self.pos_embed[:, :t, :])
             
             # 解码
-            pred_traj_points = self.decoder(encoder_out[:,[0]], tgt_embedding, tgt_mask, tgt_padding_mask)
+            pred_actions_logtis = self.decoder(encoder_out, tgt_embedding, tgt_mask)
             
             # 获取最后一步的预测
-            last_step_pred = pred_traj_points[:, -1, :]
-            last_step_pred = self.output(last_step_pred)
-            last_step_pred = self.out_drop(last_step_pred)
+            last_step_pred_action_logti = pred_actions_logtis[:, -1, :]
+            last_step_pred_action = self.output_layer(last_step_pred_action_logti)
             
-            # 应用softmax并选择最可能的token
-            pred_token = torch.softmax(last_step_pred, dim=-1).argmax(dim=-1)
+            prev_point = output_sequence[:, t-1, :].detach()          # [B,4]
+            pred_point = self.kinematic_step(prev_point, last_step_pred_action)  # [B,4]
             
             # 计划采样：决定是使用真实值还是预测值
-            use_ground_truth = torch.rand(batch_size, device=self.cfg.device) < self.scheduled_sampling_ratio
-            next_token = torch.where(use_ground_truth, tgt[:, t], pred_token)
+            use_ground_truth = torch.rand(batch_size, 1, device=self.cfg.device) < self.scheduled_sampling_ratio
+            next_token = torch.where(use_ground_truth, tgt[:, t, :], pred_point)
             
             # 更新输出序列
             if t < seq_len:
-                output_sequence[:, t] = next_token
+                output_sequence[:, t, :] = next_token
         
         final_global_context = global_context.unsqueeze(1).repeat(1, tgt.size(1), 1)
 
+        output_seq_detached = output_sequence.detach()
 
+        tgt_mask, tgt_padding_mask = self.create_mask(output_seq_detached)
 
-        tgt_mask, tgt_padding_mask = self.create_mask(output_sequence)
-
-        tgt_embedding = self.embedding(output_sequence)
+        tgt_embedding = self.traj_embedding(output_seq_detached)
         tgt_embedding = tgt_embedding + final_global_context
         tgt_embedding = self.pos_drop(tgt_embedding + self.pos_embed[:, :seq_len, :])
 
-        pred_traj_points = self.decoder(encoder_out[:,[0]], tgt_embedding, tgt_mask, tgt_padding_mask)
-        pred_traj_points = self.output(pred_traj_points)
-        pred_traj_points = self.out_drop(pred_traj_points)
-        return pred_traj_points
+        pred_actions_logtis = self.decoder(encoder_out, tgt_embedding, tgt_mask)
+        pred_actions = self.output_layer(pred_actions_logtis)
+        return pred_actions
     
 
     def predict(self, encoder_out, point_out, tgt):
-        length = tgt.size(1)
-        padding_num = self.cfg.item_number * self.cfg.autoregressive_points + 2 - length
+        batch_size, length, feat_dim = tgt.size()
+        assert feat_dim == 4
+
+        padding_num = self.cfg.autoregressive_points -1 - length
 
         global_context = point_out.reshape(-1, self.cfg.tf_de_dim)
         
         offset = 1
         if padding_num > 0:
-            padding = torch.ones(tgt.size(0), padding_num).fill_(self.PAD_token).long().to(self.cfg.device)
+            padding = torch.ones(batch_size, padding_num, 4, device=self.cfg.device) * self.PAD_token
             tgt = torch.cat([tgt, padding], dim=1)
 
         tgt_mask, tgt_padding_mask = self.create_mask(tgt)
         final_global_context = global_context.unsqueeze(1).repeat(1, tgt.size(1), 1)
 
-        tgt_embedding = self.embedding(tgt)
+        tgt_embedding = self.traj_embedding(tgt)
         tgt_embedding = tgt_embedding + final_global_context
         tgt_embedding = tgt_embedding + self.pos_embed[:, :tgt.size(1), :]
 
-        pred_traj_points = self.decoder(encoder_out[:,[0]], tgt_embedding, tgt_mask, tgt_padding_mask)
-        pred_traj_points = self.output(pred_traj_points)[:, length - offset, :]
+        pred_actions_logtis = self.decoder(encoder_out, tgt_embedding, tgt_mask, tgt_padding_mask)
 
-        pred_traj_points = torch.softmax(pred_traj_points, dim=-1)
-        pred_traj_points = pred_traj_points.argmax(dim=-1).view(-1, 1)
-        return pred_traj_points
+        last_step_pred_action_logti = pred_actions_logtis[:, length - offset, :]
+        
+        pred_actions = self.output_layer(last_step_pred_action_logti)
+
+        prev_point = tgt[:, length - 1, :]         # [B,4]
+        pred_point = self.kinematic_step(prev_point, pred_actions)  # [B,4]
+
+        return pred_point
 
     
 

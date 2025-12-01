@@ -4,7 +4,7 @@ import torch
 import torch.nn as nn
 from torch import cat
 
-from model_interface.model.attention import AttentionNetworkBuiltin
+from model_interface.model.attention import AttentionNetwork
 
 def orthogonal_init(layer, gain=1.0):
     nn.init.orthogonal_(layer.weight, gain=gain)
@@ -55,7 +55,7 @@ class MultiObsEmbedding(nn.Module):
             self.net = nn.Sequential(*layers)
         else:
             attention_configs = configs['attention_configs']
-            self.net = AttentionNetworkBuiltin(
+            self.net = AttentionNetwork(
                 embed_size,
                 attention_configs['depth'],
                 attention_configs['heads'],

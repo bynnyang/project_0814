@@ -77,13 +77,13 @@ class AttentionNetwork(nn.Module):
     def __init__(self, dim, depth, heads, dim_head, mlp_dim, n_features, hidden_dim, output_dim):
         super().__init__()
         self.encoder = Transformer(dim, depth, heads, dim_head, mlp_dim,)
-        self.output = nn.Sequential(
-            nn.Linear(n_features*dim, hidden_dim),
-            nn.Tanh(),
-            nn.Linear(hidden_dim, output_dim),
-            # nn.Tanh(),
-        )
-        self.view_embed = nn.Parameter(torch.zeros(1, n_features, dim))
+        # self.output = nn.Sequential(
+        #     nn.Linear(n_features*dim, hidden_dim),
+        #     nn.Tanh(),
+        #     nn.Linear(hidden_dim, output_dim),
+        #     # nn.Tanh(),
+        # )
+        # self.view_embed = nn.Parameter(torch.zeros(1, n_features, dim))
 
     def forward(self, x):
         # x = x + self.view_embed
