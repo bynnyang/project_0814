@@ -4,6 +4,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from PIL import Image
 from tqdm import tqdm
+import shutil
 
 # 设置文件夹路径
 folder_path = "e2e_dataset/test/"
@@ -13,7 +14,7 @@ folder_path = "e2e_dataset/test/"
 for filename in tqdm(sorted(os.listdir(folder_path))):
     cnt = 0
     path_sring = os.path.join(folder_path, filename)
-    if filename == "20250623T153621" or filename == "20250406T191929" or filename == "20250403T103923":
+    if  filename == "e2e_dataset.pt" or filename == "20250623T153621" or filename == "20250406T191929" or filename == "20250403T103923":
         continue
     for item in tqdm(os.listdir(path_sring)):
         file_path = os.path.join(path_sring, str(cnt))
@@ -22,9 +23,8 @@ for filename in tqdm(sorted(os.listdir(folder_path))):
         plot_father_path = os.path.join(file_path, "test","test.png")
         data_pre_view_path = os.path.join(path_sring, "test")
         os.makedirs(data_pre_view_path, exist_ok=True)
-        plt.ioff()
-        img_pred = Image.open(plot_father_path)
-        plt.imshow(img_pred)
-        plt.savefig(os.path.join(data_pre_view_path, str(cnt)))          # 弹窗查看；若想保存：plt.savefig(os.path.join(root, sub, 'pred_view.png'))
-        plt.close()
+        # img_pred = Image.open(plot_father_path)
+        new_path = os.path.join(data_pre_view_path, str(cnt))
+        # img_pred.save(new_path, quality=95)  # 仅修改压缩质量
+        shutil.copy(plot_father_path, new_path)  # 原始文件完整保留
         cnt = cnt + 1

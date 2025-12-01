@@ -26,7 +26,7 @@ def calculate_tangent(points, mode):
     if num_points < 2:
         return [0.]
     
-    max_index = np.argmax(points[:, 0])
+    max_index = np.argmax(points[:, 0])   #这里分段计算的原因是，插值法只能从index = 0 往 index递增的方向插值，角度方向永远是朝着index增大的方向的，所以必须要做改造 
 
     max_points = points.shape[0]
 
@@ -57,14 +57,12 @@ def calculate_tangent(points, mode):
         traj_heading_tail = np.arctan2(tangent_tail[:, 1], tangent_tail[:, 0])
         traj_heading_tail = traj_heading_tail + np.pi
         traj_heading_tail = get_safe_yaw(traj_heading_tail)
-
-
-
-        traj_heading_list = np.rad2deg(traj_heading_head).tolist() + np.rad2deg(traj_heading_tail).tolist()[1:]
+      
+        traj_heading_list = np.rad2deg(traj_heading_head).tolist()[:-1] + np.rad2deg(traj_heading_tail).tolist()
 
     else:
         tangent = np.zeros((num_points, 2))
-        heading_pos = 3.14 if max_index == 0 else 0.0
+        heading_pos = 3.14 if max_index == 0 else 0.0   #这里分段计算的原因是，插值法只能从index = 0 往 index递增的方向插值，角度方向永远是朝着index增大的方向的，所以必须要做改造 
         for i in range(num_points):
             if mode == "three_point":
                 if i == 0:
@@ -98,6 +96,8 @@ def calculate_tangent(points, mode):
         traj_heading = np.arctan2(tangent[:, 1], tangent[:, 0])
         traj_heading = traj_heading + heading_pos
         traj_heading = get_safe_yaw(traj_heading)
+        traj_heading = np.where(traj_heading < -2.8, traj_heading + np.pi,
+              np.where(traj_heading > 2.8, traj_heading - np.pi, traj_heading))
 
         traj_heading_list = np.rad2deg(traj_heading).tolist()
 

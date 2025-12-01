@@ -159,3 +159,58 @@ class ParkingModelReal(nn.Module):
             raise ValueError(f"Don't support decoder_method '{self.cfg.decoder_method}'!")
         
         return trajectory_decoder
+    
+
+class ParkingModelInference(nn.Module):
+    def __init__(self, cfg: Configuration):
+        super().__init__()
+
+        self.cfg = cfg
+        
+        self.actor_cfg = ACTOR_CONFIGS
+
+        self.multi_encoder = MultiObsEmbedding(self.actor_cfg)
+             
+        self.target_point_encoder = TrajInputEmbedding(self.cfg.global_graph_width)
+
+        # Trajectory Decoder
+        self.trajectory_decoder = self.get_trajectory_decoder()
+
+    def forward(self, data, global_step):
+        # Encoder
+        # bev_feature, pred_depth, bev_target = self.encoder(data, mode="train")
+
+        encoder_out = self.multi_encoder(data)
+      
+
+        point_out = self.target_point_encoder(data["target_point"].to(self.cfg.device))
+
+        # Decoder
+        pred_acions = self.trajectory_decoder(encoder_out, point_out, data['gt_traj_point'].to(self.cfg.device), global_step)
+
+        return pred_acions
+
+    def predict_transformer(self, data, predict_token_num):
+        # Encoder
+    
+        encoder_out = self.multi_encoder(data)
+        point_out = self.target_point_encoder(data["target_point"].to(self.cfg.device))
+        # Auto Regressive Decoder
+        autoregressive_point = data['gt_traj_point'].to(self.cfg.device) # During inference, we regard BOS as gt_traj_point_token.
+        for _ in range(predict_token_num):
+            pred_traj_point = self.trajectory_decoder.predict(encoder_out, point_out, autoregressive_point)
+            pred_traj_point = pred_traj_point.unsqueeze(1)
+            autoregressive_point = torch.cat([autoregressive_point, pred_traj_point], dim=1)
+
+        return autoregressive_point
+    
+    def get_trajectory_decoder(self):
+        if self.cfg.decoder_method == "transformer":
+            trajectory_decoder = TrajectoryDecoder(self.cfg)
+            # trajectory_decoder = TrajectoryDecoderONNX(self.cfg)
+        elif self.cfg.decoder_method == "gru":
+            trajectory_decoder = GRUTrajectoryDecoder(self.cfg)
+        else:
+            raise ValueError(f"Don't support decoder_method '{self.cfg.decoder_method}'!")
+        
+        return trajectory_decoder

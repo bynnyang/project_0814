@@ -90,7 +90,7 @@ class ParkingDataModuleReal(torch.utils.data.Dataset):
             self.e2e_dataset = os.path.join("./e2e_dataset", "test", "e2e_dataset.pt")
         self.dataptpath = os.path.join(self.gnndir, f"{self.folder}_intermediate")
 
-        if False and os.path.exists(self.e2e_dataset):
+        if os.path.exists(self.e2e_dataset):
             # Load the dataset.pt file
             self.load_dataset()
         else:
@@ -415,7 +415,7 @@ class ParkingDataModuleReal(torch.utils.data.Dataset):
 
         return history_trajector_vcs, history_traj_len
     
-    def convert_clusters_to_geometry(sefl, cluster_frame_in_vcs):
+    def convert_clusters_to_geometry(self, cluster_frame_in_vcs):
         clusters: List[LineString] = []
 
         for cl in cluster_frame_in_vcs:
@@ -454,13 +454,12 @@ class ParkingDataModuleReal(torch.utils.data.Dataset):
             for ego_index in range(0, traje_info_obj.total_frames):  # ego iteration
                 ego_pose = traje_info_obj.get_trajectory_point(ego_index)
                 world2ego_mat = ego_pose.get_homogeneous_transformation().get_inverse_matrix()
-                # create predict point
-                # predict_point_token_gt, predict_point_gt = self.create_predict_point_gt(traje_info_obj, ego_index, world2ego_mat, switch_side, task_path, 0)
+              
                 # create parking goal
                 fuzzy_parking_goal, parking_goal = self.create_parking_goal_gt(traje_info_obj, world2ego_mat, switch_side)
 
-                # target_pose = self.parser_measurements_target(parking_goal, switch_side)
-                # self.save_measurements(target_pose, ego_index, task_path, 0, "pre_target")
+                target_pose = self.parser_measurements_target(parking_goal, switch_side)
+                self.save_measurements(target_pose, ego_index, task_path, 0, "pre_target")
 
                 cluster_frame_info_vcs = self.create_clusters_info_vcs(cluster_info_obj, world2ego_mat, ego_index, switch_side, task_path)
 
@@ -477,10 +476,10 @@ class ParkingDataModuleReal(torch.utils.data.Dataset):
                         init_state = State([0.0,0.0,0.0])
                 
                         observation = self.car_parking_date.calc_obervation_feature(init_state, parking_goal, obervattion_clusters)
-                        target_pose = self.parser_measurements_target(parking_goal, switch_side)
-                        self.save_measurements(target_pose, ego_index - i, task_path, 0, "pre_target")
-                        cluster_frame_in_switch = self.parser_clusters_pred(cluster_frame_info_vcs)
-                        self.save_measurements(cluster_frame_in_switch, ego_index - i, task_path, 0, "pre_cluster")
+                        # target_pose = self.parser_measurements_target(parking_goal, switch_side)
+                        # self.save_measurements(target_pose, ego_index - i, task_path, 0, "pre_target")
+                        # cluster_frame_in_switch = self.parser_clusters_pred(cluster_frame_info_vcs)
+                        # self.save_measurements(cluster_frame_in_switch, ego_index - i, task_path, 0, "pre_cluster")
 
                         start_pose = traje_info_obj.get_trajectory_point(0)
                         start_pose_vcs = start_pose.get_pose_in_ego(world2ego_mat)

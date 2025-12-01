@@ -53,10 +53,12 @@ def inference(inference_cfg: InferenceConfiguration):
     ParkingInferenceModelModule = get_parking_model(data_mode=inference_cfg.train_meta_config.data_mode, run_mode="inference")
     parking_inference_obj = ParkingInferenceModelModule(inference_cfg)
     dataset_test = ParkingDataModuleReal(inference_cfg.train_meta_config, is_train=2)
-    test_loader = DataLoader(dataset_test, batch_size= 1, shuffle=False, num_workers=0, collate_fn=collate_graph)
+    test_loader = DataLoader(dataset_test, batch_size= 1, shuffle=False, num_workers=0)
     count = 0
     for data in tqdm(test_loader):
-        data.to(device)
+        for key, val in data.items():
+            if isinstance(val, torch.Tensor):
+                data[key] = val.to(device)
         parking_inference_obj.predict(data, count, mode=inference_cfg.predict_mode)
         count+=1
     

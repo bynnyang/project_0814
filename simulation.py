@@ -1,6 +1,7 @@
 import argparse
 from dataset_interface.dataloader import ParkingDataloaderModule
 from dataset_interface.dataset_real import ParkingDataModuleReal
+from dataset_interface.dataset_real import Obs_Processor
 from utils.config import get_inference_config_obj
 from dataset import GraphData
 from dataset import GraphDataset
@@ -31,12 +32,18 @@ from utils.vec2d import Vec2d
 from utils.box2d import Box2d
 from utils.pose_utils import CustomizePose
 import copy
+from env.vehicle import State
+from env.car_parking_base import CarParking
+from dataset_interface.bev_render import BevRender
+from shapely.geometry import LineString
+from utils.trajectory_utils import HistoryTrajectoryInfo
+from torch.utils.data import Dataset, DataLoader
 
 NODE_NAME = "inference_node"
 SUB_TOPIC_FUSION = "function/parking/par_fusion"       # 接收 sensor 数据
 SUB_TOPIC_DR = "function/parking/parking_zongmu_20ms"       # 接收 sensor 数据
 PUB_TOPIC = "function/parking/par_planning"   # 发布轨迹
-PERIOD_S = 0.1              # 100 ms
+PERIOD_S = 0.6              # 100 ms
 
 g_latest_sensor_fusion = None      # 最新收到的 sensor 数据
 g_latest_sensor_dr = None      # 最新收到的 sensor 数据
@@ -46,8 +53,21 @@ slot_data = None
 g_x = None
 g_y = None
 g_theta = None
+cur_s = None
+history_trajectory = HistoryTrajectoryInfo()
+switch_side = None
 
+class SimulationDataset(Dataset):
+    def __init__(self, data_dict: Dict[str, Any]):
+        # 存储单个样本
+        self.data = data_dict
     
+    def __len__(self):
+        return 1  # 单样本
+    
+    def __getitem__(self, idx):
+        return self.data
+
 def load_checkpoint(checkpoint_path, model, optimizer):
     state = torch.load(checkpoint_path)
     model.load_state_dict(state['state_dict'])
@@ -69,6 +89,7 @@ def parser_dr_msg(msg) -> CustomizePose:
         pose_ret = CustomizePose(x=msg.ego_pose.Pose.x, y=msg.ego_pose.Pose.y, z=0.0, roll=0.0, yaw=msg.ego_pose.Pose.theta / 3.14 * 180, pitch=0.0)
     else:
         pose_ret = CustomizePose(x=g_x, y=g_y, z=0.0, roll=0.0, yaw=g_theta / 3.14 * 180, pitch=0.0)
+        # pose_ret = CustomizePose(x=msg.ego_pose.Pose.x, y=msg.ego_pose.Pose.y, z=0.0, roll=0.0, yaw=msg.ego_pose.Pose.theta / 3.14 * 180, pitch=0.0)
     return pose_ret
 
 def parser_slot_msg(msg):
@@ -151,8 +172,40 @@ def get_clusters_feature_ls(clusters_info_vcs):
         clusters_feature_ls.append([start_pose, end_pose, clusters_info_vcs[index]["id"], index])
     return clusters_feature_ls
 
+def convert_clusters_to_geometry(cluster_frame_in_vcs):
+        clusters: List[LineString] = []
 
-def compute_feature_for_one_seq(data_fusion, data_dr) -> List[List]:
+        for cl in cluster_frame_in_vcs:
+            p0 = cl["p0"]
+            p1 = cl["p1"]
+
+            # Shapely LineString
+            line = LineString([(p0.x, p0.y), (p1.x, p1.y)])
+            clusters.append(line)
+
+        return clusters
+
+def create_history_point(traje_info_obj: HistoryTrajectoryInfo, ego_index: int, world2ego_mat: np.array, switch_side: float):
+    history_trajector_vcs = []
+    history_traj_len = 0
+    if ego_index == 0:
+        return history_trajector_vcs, history_traj_len
+    for i in range(1, 13):  # predict iteration
+        ds = -0.5 * i + traje_info_obj.get_trajectory_point(ego_index).s
+        if(ds < 0):
+            return history_trajector_vcs, history_traj_len
+        history_pose_in_world = traje_info_obj.get_trajectory_point_by_s_dec(ego_index, ds)
+        history_pose_in_ego = history_pose_in_world.get_pose_in_ego(world2ego_mat)
+        history_pose_in_ego.y = history_pose_in_ego.y * switch_side
+        history_pose_in_ego.yaw = get_safe_yaw(history_pose_in_ego.yaw) * switch_side
+        history_trajector_vcs.append(history_pose_in_ego)
+        history_trajector_vcs = history_trajector_vcs[::-1]
+        history_traj_len = len(history_trajector_vcs)
+
+    return history_trajector_vcs, history_traj_len
+
+
+def compute_feature_for_one_seq(inference_cfg: InferenceConfiguration, data_fusion, data_dr):
     """
     return lane & track features
     args:
@@ -169,6 +222,15 @@ def compute_feature_for_one_seq(data_fusion, data_dr) -> List[List]:
     # normalize timestamps
     cluster_info_data = parser_clusters_msg(data_fusion)
     judge_ego_pose = parser_dr_msg(data_dr)
+    global cur_s
+    if cur_s == None:
+        cur_s = 0.0
+    else:
+        last_point = history_trajectory.trajectory_list[-1]
+        cur_s =  last_point.s + np.sqrt((judge_ego_pose.x - last_point.x)**2 + (judge_ego_pose.y - last_point.y)**2)
+    judge_ego_pose.s = cur_s
+    history_trajectory_point = judge_ego_pose
+    history_trajectory.add_history_point(history_trajectory_point)
     global slot_data
     if slot_data == None:
         slot_data = parser_slot_msg(data_fusion)
@@ -190,24 +252,87 @@ def compute_feature_for_one_seq(data_fusion, data_dr) -> List[List]:
 
 
     vec_park_slot = middlw_position + Vec2d.create_unit_vec2d(park_slot_angle_rad + 3.14) * 4.0
-
-    switch_side = -1.0 if vcs_slot_point_2.y > vcs_slot_point_1.y else 1.0
+    global switch_side
+    if switch_side == None:
+        switch_side = -1.0 if vcs_slot_point_2.y > vcs_slot_point_1.y else 1.0
 
     park_slot_vcs = CustomizePose(x=vec_park_slot.x_, y=vec_park_slot.y_, z=0.0, roll=0.0, yaw=(park_slot_angle_rad / 3.14 * 180), pitch=0.0)
 
     target_point_vcs = create_parking_goal_vcs(park_slot_vcs, switch_side)
     clusters_info_vcs = create_clusters_info_vcs(cluster_info_data, judge_world2ego_mat, switch_side)
+    render_cnn = BevRender()
+    car_parking_date = CarParking()
+    img_processor = Obs_Processor()
 
-    agent_feature = get_agent_feature_ls()
+    init_state = State([0.0,0.0,0.0])
+    obervattion_clusters = convert_clusters_to_geometry(clusters_info_vcs)
+                
+    observation = car_parking_date.calc_obervation_feature(init_state, target_point_vcs, obervattion_clusters)
 
-    park_slot_feature_ls = get_target_point_vcs_feature_ls(target_point_vcs)
-    # pdb.set_trace()
+    history_trajector_vcs, history_traj_len = create_history_point(history_trajectory, history_trajectory.total_frames -1, judge_world2ego_mat, switch_side)
+    start_pose = history_trajectory.get_trajectory_point(0)
+    start_pose_vcs = start_pose.get_pose_in_ego(judge_world2ego_mat)
+    start_pose_vcs.y = start_pose_vcs.y * switch_side
+    start_pose_vcs.yaw = get_safe_yaw(start_pose_vcs.yaw) * switch_side
 
-    # search nearby moving objects from the last observed point of agent
-    clusters_feature_ls = get_clusters_feature_ls(clusters_info_vcs)
-    # get agent features
 
-    return [agent_feature, clusters_feature_ls, park_slot_feature_ls, judge_ego2world_mat]
+    traj = [[0.0,0.0,0.0]]
+    traj = np.array(traj, dtype=np.float32)   # [T,3] = (x,y,yaw)
+        # x,y 归一化到 [-1,1]
+    traj_x = np.clip(traj[:,0] / inference_cfg.train_meta_config.traj_x_range, -1.0, 1.0)
+    traj_y = np.clip(traj[:,1] / inference_cfg.train_meta_config.traj_y_range, -1.0, 1.0)
+    traj_yaw = traj[:,2]   # 假设是弧度
+
+        # [T,4] = (x_norm, y_norm, cos(yaw), sin(yaw))
+    gt_traj_point_np = np.stack(
+            [traj_x, traj_y, np.cos(traj_yaw), np.sin(traj_yaw)],
+            axis=-1
+        )   # [T,4]
+    gt_traj_point = torch.from_numpy(gt_traj_point_np.astype(np.float32))
+
+
+    target_point_raw = np.array(target_point_vcs, dtype=np.float32)  # [N_tp,3] 通常 N_tp=1
+    tp_x = np.clip(target_point_raw[0] / inference_cfg.train_meta_config.traj_x_range, -1.0, 1.0)
+    tp_y = np.clip(target_point_raw[1] / inference_cfg.train_meta_config.traj_y_range, -1.0, 1.0)
+    tp_yaw = target_point_raw[2]
+    target_point_np = np.stack(
+            [tp_x, tp_y, np.cos(tp_yaw), np.sin(tp_yaw)],
+            axis=-1
+        )   # [N_tp,4] 一般是 [1,4]
+    target_point = torch.from_numpy(target_point_np.astype(np.float32))
+
+
+    gt_traj_point_token = 300
+    gt_traj_point_token  = torch.from_numpy(np.array(gt_traj_point_token))
+    
+    imge_cnn = render_cnn.render(start_pose_vcs, history_trajector_vcs, history_traj_len, target_point_vcs, clusters_info_vcs, 0, "task_path")
+    processed_imge_cnn = img_processor.process_img(imge_cnn)
+    processed_imge_cnn = torch.from_numpy(processed_imge_cnn.astype(np.float32))
+
+    action_mask = observation['action_mask']
+    action_mask = torch.from_numpy(action_mask.astype(np.float32))
+
+    lidar = observation['lidar']
+    lidar = lidar / inference_cfg.train_meta_config.traj_x_range
+    lidar = torch.from_numpy(lidar.astype(np.float32))
+
+    target_feature = observation['target']
+    target_feature[0] = target_feature[0] / np.sqrt(inference_cfg.train_meta_config.traj_x_range**2 + inference_cfg.train_meta_config.traj_y_range**2)
+    target_feature[0] = np.clip(target_feature[0], -1.0, 1.0)
+    target_feature        = torch.from_numpy(target_feature.astype(np.float32)) 
+
+    data = {
+            "image": processed_imge_cnn,               # Tensor [3,H,W]
+            "gt_traj_point": gt_traj_point,                # [T,4] = (x_norm,y_norm,cos,sin)
+            "target_point": target_point,         # [N_tp,4] 一般 [1,4]
+            "gt_traj_point_token": gt_traj_point_token,
+            "lidar": lidar,
+            "action_mask": action_mask,
+            "target": target_feature
+        }
+ 
+
+    return data, judge_ego2world_mat
 
 
 def encoding_features(agent_feature, clusters_feature, park_slot_feature):
@@ -361,104 +486,21 @@ def get_park_slot_edge_index(num_nodes, start=0):
 
 def inference(inference_cfg: InferenceConfiguration, parking_inference_model:ParkingInferenceModuleReal, data_fusion, data_dr):
     device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
-    agent_feature, clusters_feature, park_slot_feature, judge_ego2world_mat = compute_feature_for_one_seq(data_fusion, data_dr)
-    feature_pd = encoding_features(agent_feature, clusters_feature, park_slot_feature)
-    valid_len_ls = []
-    data_ls = []
-    x_ls = []
-    y = np.array([1])
-    cluster = None
-    edge_index_ls = []
-    all_in_features = feature_pd['POLYLINE_FEATURES'].values[0]
-    agen_len = feature_pd['AGENT_LEN'].values[0]
-    park_slot_len = feature_pd['PARK_SLOT_LEN'].values[0]
-    cluster_len = feature_pd['CLUSTER_LEN'].values[0]
-    cluster = all_in_features[:, -1].reshape(-1).astype(np.int32)
-    valid_len_ls.append(cluster.max())
-    agent_mask, park_slot_mask, clusert_mask = feature_pd["AGENT_ID_TO_MASK"].values[0], feature_pd['PARK_SLOT_ID_TO_MASK'].values[0], feature_pd['CLUSTER_ID_TO_MASK'].values[0]
-    agent_id = 0
-    edge_index_start = 0
-    assert all_in_features[agent_id][-1] == 0, f"agent id is wrong. id {agent_id}: type {all_in_features[agent_id][4]}"
-
-    for id_, mask_ in agent_mask.items():
-        data_ = all_in_features[mask_[0]:mask_[1]]
-        edge_index_, edge_index_start = get_agent_edge_index(data_.shape[0], start=edge_index_start)
-        x_ls.append(data_)
-        edge_index_ls.append(edge_index_)
-
-    for id_, mask_ in park_slot_mask.items():
-        data_ = all_in_features[mask_[0] + agen_len: mask_[1] + agen_len]
-        edge_index_, edge_index_start = get_park_slot_edge_index(data_.shape[0], edge_index_start)
-        x_ls.append(data_)
-        edge_index_ls.append(edge_index_)
-                
-    for id_, mask_ in clusert_mask.items():
-        data_ = all_in_features[mask_[0] + agen_len + park_slot_len: mask_[1] + agen_len + park_slot_len]
-        edge_index_, edge_index_start = get_cluster_edge_index(data_.shape[0], edge_index_start)
-        x_ls.append(data_)
-        edge_index_ls.append(edge_index_)
-    edge_index = np.hstack(edge_index_ls)
-    x = np.vstack(x_ls)
-    data_ls.append([x, y, cluster, edge_index])
-
-        # [x, y, cluster, edge_index, valid_len]
-    g_ls = []
-    padd_to_index = np.max(valid_len_ls)
-    feature_len = data_ls[0][0].shape[1]
-    for ind, tup in enumerate(data_ls):
-        pad_matrix = np.zeros((padd_to_index - tup[-2].max(), feature_len), dtype=tup[0].dtype)
-        pad_matrix[:, -1] = np.arange(tup[-2].max() + 1, padd_to_index + 1)
-        tup[0] = np.vstack([tup[0], pad_matrix])
-        tup[-2] = np.hstack([tup[2], np.arange(tup[-2].max()+1, padd_to_index+1)])
-        # ========== 在这里添加自环 ==========
-        edge_index_np = tup[3]
-        num_nodes = tup[0].shape[0]
-
-        # 移除已有的自环（如果有）
-        mask = edge_index_np[0] != edge_index_np[1]
-        edge_index_np = edge_index_np[:, mask]
-        # 构造自环
-        loop_index = np.arange(num_nodes, dtype=np.int64)
-        loop_index = np.stack([loop_index, loop_index], axis=0)  # shape=(2, num_nodes)
-
-            # 拼接到原有边集合
-        edge_index_np = np.hstack([edge_index_np, loop_index])
-        g_data = GraphData(
-            x=torch.from_numpy(tup[0]),
-            y=torch.from_numpy(tup[1]),
-            cluster=torch.from_numpy(tup[2]),
-            edge_index=torch.from_numpy(edge_index_np),
-            valid_len=torch.tensor([valid_len_ls[ind]]),
-            time_step_len=torch.tensor([padd_to_index + 1])
-            # time_step_len=torch.tensor([valid_len_ls[ind] + 1])
-        )
-        g_ls.append(g_data)
-
-    g: GraphData = g_ls[0].clone()  # 这是 GraphData 实例
-
-    x = g.x.clone()
-
-    x[:, 0] = (x[:, 0] - inference_cfg.train_meta_config.graph_norm_x_min) / (inference_cfg.train_meta_config.graph_norm_x_max - inference_cfg.train_meta_config.graph_norm_x_min)
-    x[:, 1] = (x[:, 1] - inference_cfg.train_meta_config.graph_norm_y_min) / (inference_cfg.train_meta_config.graph_norm_y_max - inference_cfg.train_meta_config.graph_norm_y_min)
-    x[:, 2] = (x[:, 2] - inference_cfg.train_meta_config.graph_norm_theta_min) / (inference_cfg.train_meta_config.graph_norm_theta_max - inference_cfg.train_meta_config.graph_norm_theta_min)
-    g.x = x
-    # 把轨迹/目标等张量挂到图上成为额外属性
-
-    target_point = park_slot_feature[0].copy()
-    target_point[0] = (target_point[0] - inference_cfg.train_meta_config.target_point_x_min) / (inference_cfg.train_meta_config.target_point_x_max - inference_cfg.train_meta_config.target_point_x_min)
-    target_point[1] = (target_point[1] - inference_cfg.train_meta_config.target_point_y_min) / (inference_cfg.train_meta_config.target_point_y_max - inference_cfg.train_meta_config.target_point_y_min)
-    target_point[2] = (target_point[2] - inference_cfg.train_meta_config.target_point_theta_min) / (inference_cfg.train_meta_config.target_point_theta_max - inference_cfg.train_meta_config.target_point_theta_min)
-    # g.gt_traj_point        = torch.from_numpy(np.array(self.traj_point[index]))
-    start_token = [inference_cfg.train_meta_config.token_nums]
-    traj_point_token = start_token
-    g.gt_traj_point_token = torch.from_numpy(np.array(traj_point_token))
-    g.target_point = torch.from_numpy(np.array(target_point).astype(np.float32))
-    g.to(device)
-    t1 = time.time()
-    delta_predicts_map, traj_yaw_path_map = parking_inference_model.predict(g, 0, judge_ego2world_mat, "simulation")
-    t2 = time.time()
-    print(t2 - t1)
-    return delta_predicts_map, traj_yaw_path_map
+    data, judge_ego2world_mat = compute_feature_for_one_seq(inference_cfg, data_fusion, data_dr)
+    dataset = SimulationDataset(data)
+    simulationloader = DataLoader(
+        dataset, 
+        batch_size=1, 
+        shuffle=False, num_workers=0)
+    for batch in simulationloader:
+        for key, val in batch.items():
+            if isinstance(val, torch.Tensor):
+                batch[key] = val.to(device)
+        t1 = time.time()
+        delta_predicts_map, traj_yaw_path_map = parking_inference_model.predict(batch, 0, judge_ego2world_mat, "simulation")
+        t2 = time.time()
+        print(t2 - t1)
+        return delta_predicts_map, traj_yaw_path_map
 
 def sensor_fusion_callback(msg):
     global g_latest_sensor_fusion
@@ -505,6 +547,7 @@ def main():
         data_type=ParkingTrajectory,
         qos=qos
     )
+
     while not niodds.is_shutdown():
             t0 = time.time()
 
@@ -525,9 +568,9 @@ def main():
                 delta_predicts, traj_yaw_path = inference(inference_cfg, parking_inference_model, data_fusion, data_dr)
                 global g_x,g_y,g_theta
                 if len(delta_predicts) > 5:
-                    g_x = delta_predicts[3][0]
-                    g_y = delta_predicts[3][1]
-                    g_theta = traj_yaw_path[3]
+                    g_x = delta_predicts[2][0]
+                    g_y = delta_predicts[2][1]
+                    g_theta = traj_yaw_path[2]
                 # t2 = time.time()
                 # print(t2 - t1)
                 msg = ParkingTrajectory()

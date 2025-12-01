@@ -8,6 +8,7 @@ import torchvision
 from geometry_msgs.msg import Point, Pose, PoseStamped, Quaternion
 
 from model_interface.model.parking_model_real import ParkingModelReal
+from model_interface.model.parking_model_real import ParkingModelInference
 from utils.config import InferenceConfiguration
 from utils.pose_utils import PoseFlow, pose2customize_pose
 from utils.traj_post_process import calculate_tangent, fitting_curve
@@ -173,10 +174,7 @@ class ParkingInferenceModuleReal:
         # self.export_onnx(self.cfg.model_ckpt_path, self.cfg)
         
         self.BOS_token = self.cfg.train_meta_config.token_nums
-
-        self.traj_start_point_info = Pose()
-        self.traj_start_point_lock = threading.Lock()
-        
+      
         self.EOS_token = self.cfg.train_meta_config.token_nums + self.cfg.train_meta_config.append_token - 2
 
         self.predict_points_record = None
@@ -200,14 +198,13 @@ class ParkingInferenceModuleReal:
  
        
         filename = "./e2e_dataset/test/20250622T101821"
-        start_token = [self.BOS_token]
-        test_data["gt_traj_point_token"][0,:] = torch.tensor([start_token], dtype=torch.int64).to(self.device)
-        test_data["gt_traj_point_token"] = test_data["gt_traj_point_token"][:,0:1]
+        test_data["gt_traj_point"] = test_data["gt_traj_point"][:,0:1].to(self.device)
         self.model = self.model.to(device=self.device)
         self.model.eval()
-        self.export_onnx(self.cfg.model_ckpt_path, self.cfg, test_data)
+        # self.export_onnx(self.cfg.model_ckpt_path, self.cfg, test_data)
         delta_predicts = self.inference(test_data)
         delta_predicts = np.array(delta_predicts, dtype=np.float32)
+        delta_predicts = delta_predicts.squeeze(0)
         # delta_predicts[:,0::2] = delta_predicts[:,0::2] * (self.cfg.train_meta_config.traj_norm_x_max - self.cfg.train_meta_config.traj_norm_x_min) + self.cfg.train_meta_config.traj_norm_x_min
         # delta_predicts[:,1::2] = delta_predicts[:,1::2] * (self.cfg.train_meta_config.traj_norm_y_max - self.cfg.train_meta_config.traj_norm_y_min) + self.cfg.train_meta_config.traj_norm_y_min 
         # delta_predicts = fitting_curve(delta_predicts, num_points=self.cfg.train_meta_config.autoregressive_points, item_number=self.cfg.train_meta_config.item_number)
@@ -225,15 +222,16 @@ class ParkingInferenceModuleReal:
                 # x, y, progress_bar = point_item
                 # if abs(progress_bar) < 1 - self.cfg.progress_threshold:
                 #     break
-                x, y, theta= point_item
+                x, y, cos_theta, sin_theta = point_item
                 x_coords.append(x)
                 y_coords.append(y)
-                theta_coords.append(theta / 180 * 3.14)
+                yaw = np.arctan2(sin_theta, cos_theta) 
+                theta_coords.append(yaw)
         save_folder = os.path.join(filename,str(cnt),"test")
         os.makedirs(save_folder, exist_ok=True)
         save_path = os.path.join(save_folder, "test")
         plt.ioff()
-        plt.figure(figsize=(6, 6))
+        plt.figure(figsize=(12, 8),dpi= 300)
         plt.scatter(x_coords, y_coords, color='blue', s = 2, label='Coordinates')
         # L = 0.08   # 箭头长度，按你的坐标系调
         # dx = L * np.cos(theta_coords)
@@ -251,15 +249,13 @@ class ParkingInferenceModuleReal:
 
     def pub_simulation(self, test_data, judge_ego2world_mat):
  
-       
-        start_token = [self.BOS_token]
-        test_data["gt_traj_point_token"] = torch.tensor([start_token], dtype=torch.int64).to(self.device)
-        test_data["gt_traj_point_token"] = test_data["gt_traj_point_token"][:,0:1]
+        test_data["gt_traj_point"] = test_data["gt_traj_point"][:,0:1]
 
         self.model.eval()
         delta_predicts = self.inference(test_data)
         delta_predicts = np.array(delta_predicts, dtype=np.float32)
-        delta_predicts = fitting_curve(delta_predicts, num_points=delta_predicts.shape[0], item_number=self.cfg.train_meta_config.item_number)
+        delta_predicts = delta_predicts.squeeze(0)
+        delta_predicts = fitting_curve(delta_predicts, num_points=delta_predicts.shape[0], item_number = 4)
         traj_yaw_path = calculate_tangent(np.array(delta_predicts)[:, :2], mode="five_point")
         points = np.array(delta_predicts)[:, :2]
         max_index = np.argmax(points[:, 0])
@@ -271,7 +267,7 @@ class ParkingInferenceModuleReal:
             map_point = vcs_point.get_pose_in_world(judge_ego2world_mat)
             delta_predicts_map.append([map_point.x, map_point.y])
             traj_yaw_path_map.append(map_point.yaw / 180 * 3.14)
-        if (max_index == 0 or max_index == (max_points -1) or  max_index > 5) and self.cnt > 15 and max_points > 5:
+        if (max_index == 0 or max_index == (max_points -1) or  max_index > 5) and self.cnt > 5 and max_points > 5:
             self.predict_points_record = delta_predicts_map
             self.traj_yaw_path_record = traj_yaw_path_map
             self.cur = True
@@ -283,8 +279,10 @@ class ParkingInferenceModuleReal:
             self.cnt = 0
         self.pre = self.cur
         self.cnt = self.cnt + 1
-        if self.cnt > 17:
-            self.cnt = 17
+        if self.cnt > 10:
+            self.cnt = 10
+        # self.predict_points_record = delta_predicts_map
+        # self.traj_yaw_path_record = traj_yaw_path_map
         return self.predict_points_record, self.traj_yaw_path_record
 
     def inference(self, data):
@@ -300,15 +298,19 @@ class ParkingInferenceModuleReal:
         return delta_predicts
 
     def inference_transformer(self, data):
-        pred_traj_point= self.model.predict_transformer(data, predict_token_num=self.cfg.train_meta_config.item_number*self.cfg.train_meta_config.autoregressive_points)
-        pred_traj_point_update = pred_traj_point[0][1:]
-        pred_traj_point_update = self.remove_invalid_content(pred_traj_point_update)
+        pred_traj_point= self.model.predict_transformer(data, predict_token_num = self.cfg.train_meta_config.autoregressive_points - 1)
+        # pred_traj_point_update = pred_traj_point[0][1:]
+        # pred_traj_point_update = self.remove_invalid_content(pred_traj_point_update)
 
-        delta_predicts = detokenize_traj_point(pred_traj_point_update, self.cfg.train_meta_config.token_nums, 
-                                            self.cfg.train_meta_config.item_number, 
-                                            self.cfg.train_meta_config.xy_max)
+        # delta_predicts = detokenize_traj_point(pred_traj_point_update, self.cfg.train_meta_config.token_nums, 
+        #                                     self.cfg.train_meta_config.item_number, 
+        #                                     self.cfg.train_meta_config.xy_max)
 
-        return delta_predicts
+        pred_traj_point = np.array(pred_traj_point.cpu().numpy())
+        pred_traj_point[..., 0] *= self.cfg.train_meta_config.traj_x_range
+        pred_traj_point[..., 1] *= self.cfg.train_meta_config.traj_y_range
+
+        return pred_traj_point
 
     def inference_gru(self, data):
         delta_predicts = self.model.predict_gru(data)
@@ -336,9 +338,9 @@ class ParkingInferenceModuleReal:
 
     def load_model(self, parking_pth_path):
         self.device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
-        self.model = ParkingModelReal(self.cfg.train_meta_config)
+        self.model = ParkingModelInference(self.cfg.train_meta_config)
 
-        ckpt = torch.load(parking_pth_path, map_location='cpu')
+        ckpt = torch.load(parking_pth_path, map_location = self.device)
         # state_dict = OrderedDict([(k.replace('parking_model.', ''), v) for k, v in ckpt['state_dict'].items()])
         self.model.load_state_dict(ckpt['state_dict'])
         self.model.to(self.device)

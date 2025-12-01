@@ -323,12 +323,12 @@ class BevRender(gym.Env):
         img = np.frombuffer(obs_str, dtype=np.uint8)
         img = img.reshape((OBS_H, OBS_W, 3))
 
-        measurements_path = os.path.join(filename, str(ego_index))
-        os.makedirs(measurements_path, exist_ok=True)
-        measurements_path_final = os.path.join(measurements_path, "cnn.png")
+        # measurements_path = os.path.join(filename, str(ego_index))
+        # os.makedirs(measurements_path, exist_ok=True)
+        # measurements_path_final = os.path.join(measurements_path, "cnn.png")
 
-        image = Image.fromarray(img)      # numpy → PIL
-        image.save(measurements_path_final)          # 保存为 png/jpg 都可以
+        # image = Image.fromarray(img)      # numpy → PIL
+        # image.save(measurements_path_final)          # 保存为 png/jpg 都可以
 
         # observation = {"img": img}
         
