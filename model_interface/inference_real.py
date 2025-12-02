@@ -240,11 +240,11 @@ class ParkingInferenceModuleReal:
         self.model_onnx = ParkingModelInference(self.cfg.train_meta_config)
         
         # 加载权重  
-        checkpoint = torch.load(checkpoint_path, map_location="cpu")
+        checkpoint = torch.load(checkpoint_path, map_location = self.device)
         self.model_onnx.load_state_dict(checkpoint['state_dict'])
         self.model_onnx = self.model_onnx.to(device=self.device)
         self.model_onnx.eval()
-        number_points = self.cfg.train_meta_config.autoregressive_points
+        number_points = self.cfg.train_meta_config.autoregressive_points - 1
 
 
 

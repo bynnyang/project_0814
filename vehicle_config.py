@@ -42,7 +42,7 @@ N_DISCRETE_ACTION = len(discrete_actions)
 
 
 
-C_CONV = [4, 8,]
+C_CONV = [4, 8, 8]
 SIZE_FC = [256]
 
 ATTENTION_CONFIG = {
