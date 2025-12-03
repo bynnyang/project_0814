@@ -36,7 +36,7 @@ show_every = 100
 val_every = 5
 best_minade = float('inf')
 save_dir = './trained_params'
-date_record = "251128"
+date_record = "251202"
 global_step = 0
 
 import warnings

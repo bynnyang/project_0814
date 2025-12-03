@@ -16,7 +16,7 @@ from model_interface.model.parking_model_real import ParkingModelReal
 from torch.utils.data import random_split
 from ruamel.yaml import YAML
 from inference import test_main
-from model_interface.model.network import AE_Conv
+from model_interface.model.network import AE_ConvStriped
 import torch.nn.functional as F
 import torchvision.utils as vutils
 
@@ -87,12 +87,12 @@ def save_ae_checkpoint(checkpoint_dir, ae_model, optimizer, epoch, val_loss, dat
     }
     ckpt_path = os.path.join(
         checkpoint_dir,
-        f"ae_epoch_{epoch}.valloss_{val_loss:.4f}.{date}.pth"
+        f"ae_epoch_{epoch}.valloss_{val_loss:.6f}.{date}.pth"
     )
     torch.save(state, ckpt_path)
     print(f"[AE] model checkpoint saved to: {ckpt_path}")
     
-def train_img_ae(config_obj):
+def train_img_ae(config_obj, resume_path = None):
     device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
    
     full_dataset = ParkingDataModuleReal(config_obj, is_train=1)
@@ -117,7 +117,7 @@ def train_img_ae(config_obj):
     size_fc_list     = config_obj.img_linear_layers
     embed_size       = config_obj.embed_size
 
-    ae = AE_Conv(
+    ae = AE_ConvStriped(
         img_shape=img_shape,
         k=k_img_conv,
         embed_size=embed_size,
@@ -133,12 +133,27 @@ def train_img_ae(config_obj):
 
 
     # training loop
+    start_epoch = 0
     best_val_loss = float("inf")
+
+     # ========= 加载已有模型 =========
+    if resume_path is not None and os.path.isfile(resume_path):
+        print(f"[AE] Loading checkpoint from: {resume_path}")
+        checkpoint = torch.load(resume_path, map_location=device)
+        if isinstance(checkpoint, dict) and "state_dict" in checkpoint:
+            ae.load_state_dict(checkpoint["state_dict"])
+            optimizer.load_state_dict(checkpoint.get("optimizer", optimizer.state_dict()))
+            start_epoch = checkpoint.get("epoch", 0) + 1
+            best_val_loss = checkpoint.get("val_loss", best_val_loss)
+        else:
+            # 如果是直接保存的 AE 模型对象
+            ae = checkpoint.to(device)
+        print(f"[AE] Resuming from epoch {start_epoch}, best_val_loss={best_val_loss:.6f}")
     fg_loss_weight = 2.0
     global_step = 0
  
     # ========= 3. 训练循环 =========
-    for epoch in range(ae_epochs):
+    for epoch in range(start_epoch, ae_epochs):
         ae.train()
         epoch_loss = 0.0
         num_samples = 0
@@ -235,7 +250,7 @@ def train_img_ae(config_obj):
                 val_loader=val_loader,
                 device=device,
                 epoch=epoch,
-                save_dir=os.path.join(save_dir, "ae_recons"),
+                save_dir=os.path.join(save_dir, "ae_recons_2cnn"),
                 num_images=4
             )
 
@@ -256,6 +271,9 @@ def main():
     torch.backends.cudnn.allow_tf32 = False
     arg_parser = argparse.ArgumentParser()
     arg_parser.add_argument('--config', default='./config/training_real.yaml', type=str)
+    arg_parser.add_argument('--resume_path', 
+                       default='./trained_params/ae_epoch_129.valloss_0.020990.imgae2511.pth', 
+                       type=str)
     args = arg_parser.parse_args()
     config_path = args.config
     config_obj = get_train_config_obj(config_path)

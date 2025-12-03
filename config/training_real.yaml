@@ -15,7 +15,7 @@ check_val_every_n_epoch: 5
 epochs: 40
 learning_rate: 0.0001
 weight_decay: 0.00001
-batch_size: 16
+batch_size: 128
 num_workers: 8
 # resume_path: ""
 
@@ -64,7 +64,7 @@ tf_de_dropout: 0.005
 img_shape: [3, 512, 512]
 embed_size: 128
 k_img_conv: 3
-img_conv_layers: [4, 8, 8]
+img_conv_layers: [4, 8]
 img_linear_layers: [256]
 traj_x_range: 10.0
 traj_y_range: 10.0
