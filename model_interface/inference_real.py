@@ -152,22 +152,22 @@ class ParkingInferenceModuleReal:
             map_point = vcs_point.get_pose_in_world(judge_ego2world_mat)
             delta_predicts_map.append([map_point.x, map_point.y])
             traj_yaw_path_map.append(map_point.yaw / 180 * 3.14)
-        if (max_index == 0 or max_index == (max_points -1) or  max_index > 5) and self.cnt > 5 and max_points > 5:
-            self.predict_points_record = delta_predicts_map
-            self.traj_yaw_path_record = traj_yaw_path_map
-            self.cur = True
-        else:
-            self.predict_points_record = self.predict_points_record[1:]
-            self.traj_yaw_path_record = self.traj_yaw_path_record[1:]
-            self.cur = False
-        if self.pre == True and self.cur == False:
-            self.cnt = 0
-        self.pre = self.cur
-        self.cnt = self.cnt + 1
-        if self.cnt > 10:
-            self.cnt = 10
-        # self.predict_points_record = delta_predicts_map
-        # self.traj_yaw_path_record = traj_yaw_path_map
+        # if (max_index <= 1 or max_index == (max_points -1) or  max_index > 5) and self.cnt > 4 and max_points > 5:
+        #     self.predict_points_record = delta_predicts_map
+        #     self.traj_yaw_path_record = traj_yaw_path_map
+        #     self.cur = True
+        # else:
+        #     self.predict_points_record = self.predict_points_record[1:]
+        #     self.traj_yaw_path_record = self.traj_yaw_path_record[1:]
+        #     self.cur = False
+        # if self.pre == True and self.cur == False:
+        #     self.cnt = 0
+        # self.pre = self.cur
+        # self.cnt = self.cnt + 1
+        # if self.cnt > 10:
+        #     self.cnt = 10
+        self.predict_points_record = delta_predicts_map
+        self.traj_yaw_path_record = traj_yaw_path_map
         return self.predict_points_record, self.traj_yaw_path_record
 
     def inference(self, data):

@@ -568,9 +568,9 @@ def main():
                 delta_predicts, traj_yaw_path = inference(inference_cfg, parking_inference_model, data_fusion, data_dr)
                 global g_x,g_y,g_theta
                 if len(delta_predicts) > 5:
-                    g_x = delta_predicts[2][0]
-                    g_y = delta_predicts[2][1]
-                    g_theta = traj_yaw_path[2]
+                    g_x = delta_predicts[3][0]
+                    g_y = delta_predicts[3][1]
+                    g_theta = traj_yaw_path[3]
                 # t2 = time.time()
                 # print(t2 - t1)
                 msg = ParkingTrajectory()
