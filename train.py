@@ -29,14 +29,14 @@ from inference import test_main
 decay_lr_factor = 0.3
 decay_lr_every = 10
 lr = 0.0001
-epochs = 600
+epochs = 1000
 end_epoch = 0
 lr = 0.0001
 show_every = 100
 val_every = 5
 best_minade = float('inf')
 save_dir = './trained_params'
-date_record = "251202"
+date_record = "251209"
 global_step = 0
 
 import warnings
@@ -70,7 +70,7 @@ def save_checkpoint(checkpoint_dir, model, optimizer, end_epoch, val_minade, dat
         'end_epoch' : end_epoch,
         'val_minade': val_minade
         }
-    checkpoint_path = os.path.join(checkpoint_dir, f'gear_16_epoch_{end_epoch}.valminade_{val_minade:.6f}.{date}.{"ParkE2E"}.pth')
+    checkpoint_path = os.path.join(checkpoint_dir, f'bs_128_full_cnn_onnx_epoch_{end_epoch}.valminade_{val_minade:.6f}.{date}.{"ParkE2E"}.pth')
     torch.save(state, checkpoint_path)
     print('model saved to %s' % checkpoint_path)
     
@@ -186,7 +186,7 @@ def train(config_obj):
             curr_minade = metrics
             print(f"minADE:{metrics:7f}")
 
-            if curr_minade < (best_minade + 0.2):
+            if curr_minade < (best_minade):
                 best_minade = curr_minade
                 save_checkpoint(save_dir, model, optimizer, epoch, best_minade, date_record)
         model.train()

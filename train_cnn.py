@@ -272,7 +272,7 @@ def main():
     arg_parser = argparse.ArgumentParser()
     arg_parser.add_argument('--config', default='./config/training_real.yaml', type=str)
     arg_parser.add_argument('--resume_path', 
-                       default='./trained_params/ae_epoch_129.valloss_0.020990.imgae2511.pth', 
+                       default='./trained_params/64_batch_size_cov_ae_epoch_64.valloss_0.018641.imgae2511.pth', 
                        type=str)
     args = arg_parser.parse_args()
     config_path = args.config

@@ -37,7 +37,7 @@ class ParkingModelReal(nn.Module):
         
         require_grad = UPDATE_IMG_ENCODE
 
-        path = './trained_params/ae_recons/ae_epoch_4.valloss_0.057510.imgae2511.pth'
+        path = './trained_params/ae_recons/64_batch_size_cov_ae_epoch_69.valloss_0.018226.imgae2511.pth'
         
         self.multi_encoder.load_img_encoder(path, self.cfg.device, require_grad)
          
