@@ -61,7 +61,7 @@ class CarParking(gym.Env):
         rel_angle = math.atan2(dest_pos[1]-ego_pos[1], dest_pos[0]-ego_pos[0]) - ego_pos[2]
         rel_dest_heading = dest_pos[2] - ego_pos[2]
         tgt_repr = np.array([rel_distance, math.cos(rel_angle), math.sin(rel_angle),\
-            math.cos(rel_dest_heading), math.cos(rel_dest_heading)])
+            math.cos(rel_dest_heading), math.sin(rel_dest_heading)])
         return tgt_repr 
 
     def calc_obervation_feature(self, initial_state, parking_goal, clusters:List[LineString]):
@@ -72,7 +72,7 @@ class CarParking(gym.Env):
             observation['lidar'] = self._get_lidar_observation(clusters)
         if self.use_action_mask:
             observation['action_mask'] = self.action_filter.get_steps(observation['lidar'])
-        observation['target'] = self._get_targt_repr(parking_goal) #获得[rel_distance, math.cos(rel_angle), math.sin(rel_angle), math.cos(rel_dest_heading), math.cos(rel_dest_heading)]      
+        observation['target'] = self._get_targt_repr(parking_goal) #获得[rel_distance, math.cos(rel_angle), math.sin(rel_angle), math.cos(rel_dest_heading), math.sin(rel_dest_heading)]      
         return observation
 
 
