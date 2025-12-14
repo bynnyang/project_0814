@@ -7,6 +7,7 @@ from typing import OrderedDict
 import random
 import cv2
 import os
+from vehicle_config import *
 
 import numpy as np
 import gym
@@ -27,44 +28,6 @@ except ImportError:
     raise DependencyNotInstalled(
         "pygame is not installed, run `pip install pygame`"
     )
-
-BG_COLOR = (0, 0, 0)
-# START_COLOR = (0, 128, 255) 
-DEST_COLOR = (0, 0, 255) 
-OBSTACLE_COLOR = (255, 0, 0)
-# TRAJ_COLOR_HIGH = (10, 10, 200)
-# TRAJ_COLOR_LOW = (10, 10, 10)
-EGO_CENTER_COLOR = (255, 255, 255)  
-TARGET_CENTER_COLOR = (255, 255, 255) 
-# TRAJ_COLORS = list(map(tuple,np.linspace(\
-#     np.array(TRAJ_COLOR_LOW), np.array(TRAJ_COLOR_HIGH), TRAJ_RENDER_LEN, endpoint=True, dtype=np.uint8)))
-
-BASE = np.array([0, 160, 0], dtype=np.uint8)  # 深绿
-PEAK = np.array([0, 255, 0], dtype=np.uint8)  # 较亮绿
-TRAJ_RENDER_LEN        = 12   # 最多回看多少帧历史（你之前就有类似参数）
-TRAJ_COLORS = [
-    tuple((BASE * (1 - t) + PEAK * t).astype(np.uint8))
-    for t in np.linspace(0, 1, TRAJ_RENDER_LEN)
-]
-OBS_W = 512
-OBS_H = 512
-RENDER_TRAJ = True
-FPS = 100
-COLOR_POOL = [
-    (0, 255, 0), # dodger blue
-    (255, 127, 80), # coral
-    (255, 215, 0) # gold
-]
-
-# 轨迹渲染相关
-TRAJ_POINT_STEP        = 1    # 中心线点的步长（每 1 帧一个点）
-TRAJ_BOX_STEP          = 5    # 小车框的步长（每 5 帧一个 box）
-TRAJ_POINT_RADIUS      = 2    # 小点的像素半径
-HISTORY_BOX_SCALE      = 0.4  # 历史车身 box 相对正式车身缩小比例（0.4 比较合适）
-
-# 颜色：建议固定一个绿色通道
-TRAJ_POINT_COLOR       = (0, 160, 0)   # 深绿：轨迹中心线点
-TRAJ_BOX_COLOR         = (0, 200, 0)   # 亮绿：缩小小车 box
 
 class Obs_Processor():
     def __init__(self) -> None:

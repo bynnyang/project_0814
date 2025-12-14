@@ -204,6 +204,7 @@ class TrajectoryInfoParser:
         new_y = point_index_left.y + ratio * (point_index_right.y - point_index_left.y)
         new_yaw = point_index_left.yaw + ratio * (point_index_right.yaw - point_index_left.yaw)
         new_yaw = self.lerp_angle_degrees(point_index_left.yaw, point_index_right.yaw, ratio)
+        new_yaw = (new_yaw + 180) % (2 * 180) - 180
         new_s = point_index_left.s + ratio * (point_index_right.s - point_index_left.s)
 
         new_point = CustomizePose(new_x, new_y, 0, 0, new_yaw, 0, new_s)

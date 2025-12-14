@@ -32,6 +32,8 @@ class SilDataReader:
             "par_state_machine_dict": {},
             "parking_zongmu_50ms": {},
             "par_perception": {},
+            "par_fusion": {},
+            "sapa_ui_results": {}
         }
 
     def load(self, t_start: float, t_end: float, file_name: str) -> int:
@@ -64,6 +66,10 @@ class SilDataReader:
             self.data_dicts["parking_zongmu_50ms"][elapse_time_ms] = message
         elif message_topic == "function/parking/par_state_machine":
             self.data_dicts["par_state_machine_dict"][elapse_time_ms] = message
+        elif message_topic == "function/parking/par_fusion":
+            self.data_dicts["par_fusion"][elapse_time_ms] = message
+        elif message_topic == "function/parking/sapa_ui_results":
+            self.data_dicts["sapa_ui_results"][elapse_time_ms] = message
 
 
     def print_data_counts(self):
@@ -111,6 +117,14 @@ class SilDataReader:
         data = self.read_data_by_time(time, self.data_dicts["par_state_machine_dict"])
         return data
     
+    def get_fusion_info_by_time(self, time: float) -> any:
+        data = self.read_data_by_time(time, self.data_dicts["par_fusion"])
+        return data
+    
+    def get_sapa_ui_results_info_by_time(self, time: float) -> any:
+        data = self.read_data_by_time(time, self.data_dicts["sapa_ui_results"])
+        return data
+    
 
 class ProcessMcapData:
     def __init__(self, file_name, output_folder_path, t_start=0.0, t_end=59.5, time_step=0.5):
@@ -127,6 +141,7 @@ class ProcessMcapData:
         self.measurements = None
         self.clusters = None
         self.pillars = None
+        self.pre_park_state = None
 
     def save_measurements(self, measurements, cnt, measurement_tag="measurements"):
         measurements_path = os.path.join(self.segment_path, measurement_tag)
@@ -170,18 +185,45 @@ class ProcessMcapData:
                     }
                     clusters_list.append(my_dict)
         return clusters_list
+    
+    def parser_slot_type_msg(self,time):
+        slot_type = None
+        key_time = time
+        fusion_info = self.reader.get_fusion_info_by_time(key_time)
+        ui_results_info = self.reader.get_sapa_ui_results_info_by_time(key_time)
+        slot_index = ui_results_info.sapa_slot_ui_results[0].slot_index
+        for index, fusion_slot in enumerate(fusion_info.fusion_slots):
+            if fusion_slot.id == slot_index:
+                slot_type = fusion_slot.marking_type
+                break
+        slot_record = {
+            'slot_type': slot_type
+        }
+
+        return slot_record
+        
 
     def process_data(self):
         self.reader.load(self.t_start, self.t_end, self.file_name)
         current_time=  self.t_start
         pbar = tqdm.tqdm(desc="Processing time steps", position=0)
+        record_slot_type_cnt = 0
         while current_time < self.t_end:
             park_state  = self.reader.get_state_machine_info_by_time(current_time)
             if park_state.feature_status == 4:
                 car_key, car_value = self.reader.get_car_info_by_time(current_time)
                 self.car_info_data[car_key] = car_value
+            if self.pre_park_state == 3 and park_state.feature_status == 4:
+                slot_type = self.parser_slot_type_msg(min(current_time + 0.2, 59.8))
+                self.save_measurements(slot_type, record_slot_type_cnt, measurement_tag="slot_type")
+                record_slot_type_cnt = record_slot_type_cnt + 1
+            self.pre_park_state = park_state.feature_status
             current_time += self.time_step
             pbar.update(1)
+        if record_slot_type_cnt == 0:
+            slot_type = self.parser_slot_type_msg(1.0)
+            self.save_measurements(slot_type, record_slot_type_cnt, measurement_tag="slot_type")
+            record_slot_type_cnt = record_slot_type_cnt + 1
         pbar.close()
         seen_values = set()  # 用于记录已经出现过的值
         for key, value in self.car_info_data.items():

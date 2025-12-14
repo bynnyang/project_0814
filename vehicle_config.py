@@ -1,6 +1,8 @@
 import numpy as np
+import torch
 #########################
-
+device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
+SEED = 42
 # vehicle
 WHEEL_BASE = 2.615  # wheelbase
 FRONT_HANG = 0.68  # front hang length
@@ -19,7 +21,7 @@ VehicleBox = LinearRing([
 VALID_SPEED = [-1.2, 1.2]
 VALID_STEER = [-0.62, 0.62]
 
-NUM_STEP = 10
+NUM_STEP = 10 #这个记得改为匹配模型的0.2s  也就是NUM_STEP = 4
 STEP_LENGTH = 5e-2
 
 USE_LIDAR = True
@@ -40,7 +42,14 @@ for i in np.arange(VALID_STEER[-1], -(VALID_STEER[-1] + VALID_STEER[-1]/PRECISIO
 N_DISCRETE_ACTION = len(discrete_actions)
 
 
-
+GAMMA = 0.98
+BATCH_SIZE = 8192
+LR = 5e-6
+TAU = 0.1
+MAX_TRAIN_STEP = 1e6
+ORTHOGONAL_INIT = True
+LR_DECAY = False
+UPDATE_IMG_ENCODE = False
 
 C_CONV = [4, 8]
 SIZE_FC = [256]
@@ -72,3 +81,115 @@ ACTOR_CONFIGS = {
     'use_tanh_activate':True,
     'attention_configs': ATTENTION_CONFIG if USE_ATTENTION else None,
 }
+
+CRITIC_CONFIGS = {
+    'n_modal':2+int(USE_IMG)+int(USE_ACTION_MASK),
+    'lidar_shape':LIDAR_NUM,
+    'target_shape':5,
+    'action_mask_shape':N_DISCRETE_ACTION if USE_ACTION_MASK else None,
+    'img_shape':(3,64,64) if USE_IMG else None,
+    'output_size':1,
+    'embed_size':128,
+    'hidden_size':256,
+    'n_hidden_layers':3,
+    'n_embed_layers':2,
+    'img_conv_layers':C_CONV,
+    'img_linear_layers':SIZE_FC,
+    'k_img_conv':3,
+    'orthogonal_init':True,
+    'use_tanh_output':False,
+    'use_tanh_activate':True,
+    'attention_configs': ATTENTION_CONFIG if USE_ATTENTION else None,
+}
+
+REWARD_RATIO = 0.1
+from typing import OrderedDict
+REWARD_WEIGHT = OrderedDict({'time_cost':1,\
+            'rs_dist_reward':0,\
+            'dist_reward':5,\
+            'angle_reward':0,\
+            'box_union_reward':10,})
+
+
+FPS = 100
+
+########################
+# senerio
+MAP_LEVEL = 'Normal' # ['Normal', 'Complex', 'Extrem', 'dlp']
+MIN_PARK_LOT_LEN_DICT = {'Extrem':LENGTH+0.6,
+                            'Complex':LENGTH+0.9,
+                            'Normal':LENGTH*1.25,}
+MAX_PARK_LOT_LEN_DICT = {'Extrem':LENGTH+0.9,
+                            'Complex':LENGTH*1.25,
+                            'Normal':LENGTH*1.25+0.5}
+MIN_PARK_LOT_WIDTH_DICT = {
+    'Complex':WIDTH+0.4,
+    'Normal':WIDTH+0.85,
+}
+MAX_PARK_LOT_WIDTH_DICT = {
+    'Complex':WIDTH+0.85,
+    'Normal':WIDTH+1.2,
+}
+PARA_PARK_WALL_DIST_DICT = {
+    'Extrem':3.5,
+    'Complex':4.0,
+    'Normal':4.5,
+}
+BAY_PARK_WALL_DIST_DICT = {
+    'Complex':6.0,
+    'Normal':7.0,
+}
+N_OBSTACLE_DICT = {
+    'Extrem':8,
+    'Complex':5,
+    'Normal':3,
+}
+
+# Normal level
+MIN_DIST_TO_OBST = 0.1
+MAX_DRIVE_DISTANCE = 15.0
+DROUP_OUT_OBST = 0.0
+
+#########################
+
+OBS_W = 512
+OBS_H = 512
+RENDER_TRAJ = True
+MAX_DIST_TO_DEST = 20
+ENV_COLLIDE = False
+
+
+BG_COLOR = (0, 0, 0)
+
+DEST_COLOR = (0, 0, 255) 
+OBSTACLE_COLOR = (255, 0, 0)
+
+EGO_CENTER_COLOR = (255, 255, 255)  
+TARGET_CENTER_COLOR = (255, 255, 255) 
+
+
+BASE = np.array([0, 160, 0], dtype=np.uint8)  # 深绿
+PEAK = np.array([0, 255, 0], dtype=np.uint8)  # 较亮绿
+TRAJ_RENDER_LEN        = 12   # 最多回看多少帧历史（你之前就有类似参数）
+TRAJ_COLORS = [
+    tuple((BASE * (1 - t) + PEAK * t).astype(np.uint8))
+    for t in np.linspace(0, 1, TRAJ_RENDER_LEN)
+]
+COLOR_POOL = [
+    (0, 255, 0), # dodger blue
+    (255, 127, 80), # coral
+    (255, 215, 0) # gold
+]
+
+# 轨迹渲染相关
+TRAJ_POINT_STEP        = 1    # 中心线点的步长（每 1 帧一个点）
+TRAJ_BOX_STEP          = 5    # 小车框的步长（每 5 帧一个 box）
+TRAJ_POINT_RADIUS      = 2    # 小点的像素半径
+HISTORY_BOX_SCALE      = 0.4  # 历史车身 box 相对正式车身缩小比例（0.4 比较合适）
+
+# 颜色：建议固定一个绿色通道
+TRAJ_POINT_COLOR       = (0, 160, 0)   # 深绿：轨迹中心线点
+TRAJ_BOX_COLOR         = (0, 200, 0)   # 亮绿：缩小小车 box
+
+RS_MAX_DIST = 10
+TOLERANT_TIME = 200
