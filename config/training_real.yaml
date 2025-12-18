@@ -95,6 +95,8 @@ target_point_y_max: 0.05854923278093338
 target_point_theta_min: -0.07990014553070068
 target_point_theta_max: 1.6548668146133423
 
+pretrain_model_path: "./trained_params/bs_128_full_cnn_onnx_epoch_894.valminade_0.000002.251209.ParkE2E.pth"
+
 
 
 

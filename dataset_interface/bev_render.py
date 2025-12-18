@@ -82,7 +82,7 @@ class BevRender(gym.Env):
         # self.observation_space = {}
     
         # self.img_processor = Obs_Processor()
-        # self.observation_space['img'] = spaces.Box(low=0, high=1, 
+        # self.observation_space['image'] = spaces.Box(low=0, high=1, 
         #         shape=(OBS_W//self.img_processor.downsample_rate, OBS_H//self.img_processor.downsample_rate, 
         #         self.img_processor.n_channels), dtype=np.uint8
         #     )             # 数据类型不匹配，dtype是float类型

@@ -1,4 +1,4 @@
-
+from vehicle_config import *
 class RsPlanner(object):
     def __init__(self, step_ratio:float) -> None:
         self.route = None
@@ -21,22 +21,23 @@ class RsPlanner(object):
 
         # divide the action
         filtered_actions = []
+        speed_scale = VALID_SPEED[1]
         for action in action_list:
             action[0] *= 1
             if abs(action[1])<1 and abs(action[1])>1e-3:
                 filtered_actions.append(action)
             elif action[1]>1:
                 while action[1]>1:
-                    filtered_actions.append([action[0], 1])
+                    filtered_actions.append([action[0], 1 / speed_scale])
                     action[1] -= 1
                 if abs(action[1])>1e-3:
-                    filtered_actions.append(action)
+                    filtered_actions.append([action[0], action[1] / speed_scale])
             elif action[1]<-1:
                 while action[1]<-1:
-                    filtered_actions.append([action[0], -1])
+                    filtered_actions.append([action[0], -1 / speed_scale])
                     action[1] += 1
                 if abs(action[1])>1e-3:
-                    filtered_actions.append(action)
+                    filtered_actions.append([action[0], action[1] / speed_scale])
         
         self.actions = filtered_actions
 

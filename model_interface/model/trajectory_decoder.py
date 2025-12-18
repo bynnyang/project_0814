@@ -320,22 +320,6 @@ class ONNXTransformerDecoderLayer(nn.Module):
         self.norm3 = nn.LayerNorm(d_model)
 
     def forward(self, tgt, src, tgt_mask=None, tgt_key_padding_mask=None):
-        # tgt: (batch_size, tgt_seq_len, d_model)
-        # memory: (batch_size, src_seq_len, d_model)
-        # tgt_mask: (batch_size, 1, 1, tgt_seq_len)
-        # src_mask: (batch_size, 1, 1, src_seq_len)
-
-        # x = tgt
-        # output = self.self_attn(x, x, x, tgt_mask, tgt_key_padding_mask)    # (batch_size, tgt_seq_len, d_model)
-        # x = self.norm1(x + self.dropout1(output))    # add & norm
-
-        # output = self.cross_attn(x, src, src)    # (batch_size, seq_len, d_model)
-        # x = self.norm2(x + self.dropout2(output))    # add & norm
-
-        # output = self.ffn(x)    # (batch_size, seq_len, d_model)
-        # x = self.norm3(x + self.dropout3(output))    # add & norm
-        # return x    # (batch_size, seq_len, d_model)
-        # Ensure src (memory) not empty (avoid 0-len leading to -1 shape)
         if src is None:
             src = torch.zeros(tgt.size(0), 1, tgt.size(2), device=tgt.device, dtype=tgt.dtype)
         elif src.size(1) == 0:
@@ -365,7 +349,8 @@ class ONNXTransformerDecoderLayer(nn.Module):
         # ffn
         ff = self.ffn(self.norm3(x))
         x = x + self.dropout3(ff)
-
+        
+        x = self.final_norm(x)
 
         '''
         return x
@@ -508,23 +493,21 @@ class TrajectoryDecoderONNX(nn.Module):
         if global_step is not None:
             self.update_scheduled_sampling_ratio(global_step)
 
-        if global_step == -1:
-            self.scheduled_sampling_ratio = 0.0
-
         global_context = point_out
         
         # 保存原始目标序列
         original_tgt = tgt.clone()
-        tgt = tgt[:, :-1, :]
+        # tgt = tgt[:, :-1, :]
         batch_size, seq_len, feat_dim = tgt.size()
         assert feat_dim == 4
-        output_sequence = torch.zeros_like(tgt)
+        max_possible_len = self.cfg.autoregressive_points -1
+        output_sequence = torch.zeros(batch_size, max_possible_len, feat_dim).to(self.cfg.device)
         output_sequence[:, 0,:] = tgt[:, 0, :]
         pred_actions_list = []
 
-        for t in range(1, seq_len):
+        for t in range(1, self.cfg.autoregressive_points - 1):
             # 创建当前输入序列
-            current_input = output_sequence[:, :t, :].detach()
+            current_input = output_sequence[:, :t, :].detach().clone()
             
             # 创建掩码
             tgt_mask, tgt_padding_mask = self.create_mask(current_input)
@@ -543,26 +526,25 @@ class TrajectoryDecoderONNX(nn.Module):
             last_step_pred_action = self.output_layer(last_step_pred_action_logti)
             pred_actions_list.append(last_step_pred_action)
             
-            prev_point = output_sequence[:, t-1, :].detach()          # [B,4]
+            prev_point = output_sequence[:, t-1, :].detach().clone()          # [B,4]
             pred_point = self.kinematic_step(prev_point, last_step_pred_action)  # [B,4]
             
             # 计划采样：决定是使用真实值还是预测值
-            use_ground_truth = torch.rand(batch_size, 1, device=self.cfg.device) < self.scheduled_sampling_ratio
-            next_token = torch.where(use_ground_truth, tgt[:, t, :], pred_point)
-            
+            next_token = pred_point
+        
             # 更新输出序列
-            if t < seq_len:
+            if t < self.cfg.autoregressive_points -1:
                 output_sequence[:, t, :] = next_token
         
-        final_global_context = global_context.unsqueeze(1).repeat(1, tgt.size(1), 1)
+        final_global_context = global_context.unsqueeze(1).repeat(1, max_possible_len, 1)
 
-        output_seq_detached = output_sequence.detach()
+        output_seq_detached = output_sequence.detach().clone()
 
         tgt_mask, tgt_padding_mask = self.create_mask(output_seq_detached)
 
         tgt_embedding = self.traj_embedding(output_seq_detached)
         tgt_embedding = tgt_embedding + final_global_context
-        tgt_embedding = self.pos_drop(tgt_embedding + self.pos_embed[:, :seq_len, :])
+        tgt_embedding = self.pos_drop(tgt_embedding + self.pos_embed[:, :self.cfg.autoregressive_points, :])
 
         pred_actions_logtis = self.decoder(encoder_out, tgt_embedding, tgt_mask)
         pred_actions = self.output_layer(pred_actions_logtis)

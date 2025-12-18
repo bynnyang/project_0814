@@ -173,7 +173,7 @@ if __name__=="__main__":
     else:
         print('not load img encoder')
 
-    step_ratio = env.vehicle.kinetic_model.step_len*env.vehicle.kinetic_model.n_step*VALID_SPEED[1]
+    step_ratio = env.vehicle.kinetic_model.step_len*env.vehicle.kinetic_model.n_step* 1.0    #step_len = 0.05  n_step = 4
     rs_planner = RsPlanner(step_ratio)
     parking_agent = ParkingAgent(rl_agent, rs_planner)
 

@@ -135,6 +135,8 @@ class Configuration:
     traj_x_range: float = None
     traj_y_range: float = None
 
+    pretrain_model_path: str = None
+
 
 
 @dataclass

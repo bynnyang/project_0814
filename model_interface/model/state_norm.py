@@ -1,7 +1,7 @@
 
 import numpy as np
 
-DEFAULT_UPDATE_MODAL = {'img':False, 'lidar':True, 'target':True, 'action_mask':False}
+DEFAULT_UPDATE_MODAL = {'image':False, 'lidar':True, 'target':True, 'action_mask':False}
 
 class StateNorm():
     def __init__(self, observation_shape:dict, update_modal:dict=DEFAULT_UPDATE_MODAL) -> None:

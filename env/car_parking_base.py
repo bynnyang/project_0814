@@ -76,6 +76,7 @@ class CarParking(gym.Env):
         self.tgt_repr_size = 5 # relative_distance, cos(theta), sin(theta), cos(phi), sin(phi)
         self.dest_pose_vcs = None
         self.clusters_frame_info_vcs = None
+        self.obervattion_clusters_info_vcs = None
         self.history_traj_vcs =None
         self.history_traj_len =None
 
@@ -88,6 +89,7 @@ class CarParking(gym.Env):
         self.reward = 0.0
         self.prev_reward = 0.0
         self.accum_arrive_reward = 0.0
+        self.meter_per_pixel = 0.04
 
         self.action_space = spaces.Box(
             np.array([VALID_STEER[0], VALID_SPEED[0]]).astype(np.float32),
@@ -102,7 +104,7 @@ class CarParking(gym.Env):
             )
         if self.use_img_observation:
             self.img_processor = Obs_Processor()
-            self.observation_space['img'] = spaces.Box(low=0, high=255, 
+            self.observation_space['image'] = spaces.Box(low=0, high=255, 
                 shape=(OBS_W//self.img_processor.downsample_rate, OBS_H//self.img_processor.downsample_rate, 
                 self.img_processor.n_channels), dtype=np.uint8
             )             # 数据类型不匹配，dtype是float类型
@@ -122,7 +124,7 @@ class CarParking(gym.Env):
             low=low_bound, high=high_bound, shape=(self.tgt_repr_size,), dtype=np.float32
         )
         low_bound = np.array([-10.0, -10.0, -1, -1])
-        high_bound = np.array([10.0, 10.0, 1, 1, 1])
+        high_bound = np.array([10.0, 10.0, 1, 1])
         self.observation_space['park_target_point'] = spaces.Box(
             low=low_bound, high=high_bound, shape=(4,), dtype=np.float32
         )
@@ -243,7 +245,7 @@ class CarParking(gym.Env):
         ----------
         ``obsercation`` (Dict): 
             the observation of image based surroundings, lidar view and target representation.
-            If `use_lidar_observation` is `True`, then `obsercation['img'] = None`.
+            If `use_lidar_observation` is `True`, then `obsercation['image'] = None`.
             If `use_lidar_observation` is `False`, then `obsercation['lidar'] = None`. 
 
         ``reward_info`` (OrderedDict): different types of reward information, including:
@@ -316,7 +318,7 @@ class CarParking(gym.Env):
 
     def _get_lidar_observation(self,):
         init_state = State([0.0,0.0,0.0])
-        lidar_view = self.lidar.get_observation(init_state, self.clusters_frame_info_vcs)
+        lidar_view = self.lidar.get_observation(init_state, self.obervattion_clusters_info_vcs)
         return lidar_view
     
     def _get_targt_repr(self,):
@@ -353,10 +355,10 @@ class CarParking(gym.Env):
 
         self.screen.fill(BG_COLOR)
         self.coord_transform_to_vcs(self.vehicle.state, self.map.obstacles, self.map.dest)
-        observation = {'img':None, 'lidar':None, 'target':None, 'action_mask':None, 'park_target_point':None}
+        observation = {'image':None, 'lidar':None, 'target':None, 'action_mask':None, 'park_target_point':None}
         if self.use_img_observation:
             raw_observation = self._get_img_observation()
-            observation['img'] = self._process_img_observation(raw_observation)
+            observation['image'] = self._process_img_observation(raw_observation)
         if self.use_lidar_observation:
             observation['lidar'] = self._get_lidar_observation()
         if self.use_action_mask:
@@ -681,6 +683,7 @@ class CarParking(gym.Env):
             }
         start_id = 0
         for obs in obstacles:
+            obs = obs.shape
             coords = list(obs.coords)
             if isinstance(obs, LinearRing):
                 coords = coords[:-1]
@@ -700,6 +703,7 @@ class CarParking(gym.Env):
                 each_cluster_vcs["p0"] = p0.get_pose_in_ego(world2ego_mat)
                 each_cluster_vcs["p1"] = p1.get_pose_in_ego(world2ego_mat)
                 cluster_frame_in_vcs.append(each_cluster_vcs)
+        self.clusters_frame_info_vcs = cluster_frame_in_vcs
             
         clusters: List[LineString] = []
 
@@ -711,7 +715,7 @@ class CarParking(gym.Env):
             line = LineString([(p0.x, p0.y), (p1.x, p1.y)])
             clusters.append(line)
 
-        self.clusters_frame_info_vcs = clusters
+        self.obervattion_clusters_info_vcs = clusters
         self.history_traj_vcs, self.history_traj_len = self.create_history_point(world2ego_mat)
     def get_safe_yaw(slef, yaw):
         if yaw <= -180:

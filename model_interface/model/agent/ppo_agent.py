@@ -16,6 +16,7 @@ from model_interface.model.parking_model_real import TrajInputEmbedding
 from model_interface.model.trajectory_decoder import TrajectoryDecoderONNX
 import itertools
 from utils.config import Configuration
+from vehicle_config import *
 
 def _extract_sub_state_dict(state_dict, prefix: str):
     out = {}
@@ -171,7 +172,8 @@ class PPOAgent(AgentBase):
         self.critic_loss_list = []
 
         # the networks
-        self._init_network()
+        retrain_model_path = self.cfg.pretrain_model_path
+        self._init_network(retrain_model_path)
 
         # As a on-policy RL algorithm, PPO does not have memory, the self.memory represents
         # the buffer
@@ -180,6 +182,20 @@ class PPOAgent(AgentBase):
         # tricks
         if self.configs.state_norm:
             self.state_normalize = StateNorm(self.configs.observation_shape)
+
+        traj = [[0.0,0.0,0.0]]
+        traj = np.array(traj, dtype=np.float32)   # [T,3] = (x,y,yaw)
+            # x,y 归一化到 [-1,1]
+        traj_x = np.clip(traj[:,0] / TRAJXRANGE, -1.0, 1.0)
+        traj_y = np.clip(traj[:,1] / TRAJYRANGE, -1.0, 1.0)
+        traj_yaw = traj[:,2]   # 假设是弧度
+
+            # [T,4] = (x_norm, y_norm, cos(yaw), sin(yaw))
+        gt_traj_point_np = np.stack(
+                [traj_x, traj_y, np.cos(traj_yaw), np.sin(traj_yaw)],
+                axis=-1
+            )   # [T,4]
+        self.gt_traj_point = torch.from_numpy(gt_traj_point_np.astype(np.float32))
         
     
     def load_pretrained_from_parkingmodelreal_ckpt(self, ckpt_path: str, strict: bool = False):
@@ -260,14 +276,16 @@ class PPOAgent(AgentBase):
 
         self.log_std = \
             nn.Parameter(
-                torch.zeros(1, self.configs.action_dim), requires_grad=True
-            ).to(self.device)
+                torch.zeros(1, self.configs.action_dim, device=self.device), requires_grad=True
+            )
         self.build_optimizer()
    
             
         for n, p in self.multi_encoder.named_parameters():
-            if "embed_img" in n:
+            if n.startswith("embed_img."):
                 assert p.requires_grad is False
+            if n.startswith("re_embed_img."):
+                assert p.requires_grad is True
         
         # save and load
         self.check_list = [  # (name, item, save_state_dict)
@@ -295,13 +313,15 @@ class PPOAgent(AgentBase):
         observation = self.obs2tensor(observation)
         
         with torch.no_grad():
+            traj_point_start = self.gt_traj_point.to(self.device)
+            traj_point_start = traj_point_start.unsqueeze(1)
             encoder_out = self.multi_encoder(observation)
             point_out = self.target_point_encoder(observation['park_target_point'])
-            _, policy_out = self.actor_net(encoder_out, point_out)
-            if policy_out.dim() == 2 and policy_out.size(0) > 1:
-                raise NotImplementedError("Actor forward expects single-sample inference, got batch > 1")
-            if policy_out.dim() == 2 and policy_out.size(0) == 1:
-                policy_out = policy_out.squeeze(0)  # -> (act_dim,)
+            _, policy_out = self.actor_net(encoder_out, point_out, traj_point_start)
+            # if policy_out.dim() == 2 and policy_out.size(0) > 1:
+            #     raise NotImplementedError("Actor forward expects single-sample inference, got batch > 1")
+            # if policy_out.dim() == 2 and policy_out.size(0) == 1:
+            #     policy_out = policy_out.squeeze(0)  # -> (act_dim,)
             if self.discrete:
                 dist = Categorical(F.softmax(policy_out, dim=1))
             elif self.configs.dist_type == "beta":
@@ -546,6 +566,7 @@ class PPOAgent(AgentBase):
         mini_batch = self.configs.mini_batch
         batchsize = self.configs.batch_size
         train_times = batchsize//mini_batch if batchsize%mini_batch==0 else batchsize//mini_batch+1
+        traj_point_start = self.gt_traj_point.to(self.device)
         for _ in range(self.configs.mini_epoch):
             # use mini batch and shuffle data
             random_idx = np.arange(batchsize)
@@ -557,16 +578,24 @@ class PPOAgent(AgentBase):
                     ri = random_idx[i*mini_batch:(i+1)*mini_batch]
                 # state = state_batch[ri]
                 obs = self.get_obs(state_batch, ri)  # 仍然返回 dict[str, Tensor]
-                enc, pt = encode_obs(obs)
+                enc_train, pt_train = encode_obs(obs)
+                B = enc_train.size(0)
+                traj_point_start_mb = (
+                    traj_point_start
+                    .to(enc_train.device)
+                    .unsqueeze(1)          # (1, 4) -> (1, 1, 4)
+                    .expand(B, -1, -1)     # (B, 1, 4)
+                    .clone()               # 防止 inplace 梯度错误
+                )
                 if self.discrete:
-                    _, policy_dist = self.actor_net(enc, pt)
+                    _, policy_dist = self.actor_net(enc_train, pt_train, traj_point_start_mb)
                     dist = Categorical(F.softmax(policy_dist,dim=-1))
                     dist_entropy = dist.entropy().view(-1, 1)
                     log_prob= dist.log_prob(action_batch[ri].squeeze()).view(-1, 1)
                     old_log_prob = old_log_prob_batch[ri].view(-1,1)
 
                 elif self.configs.dist_type == "beta":
-                    _, policy_dist = self.actor_net(enc, pt)
+                    _, policy_dist = self.actor_net(enc_train, pt_train, traj_point_start_mb)
                     alpha, beta = torch.chunk(policy_dist, 2, dim=-1)
                     alpha = F.softplus(alpha) + 1.0
                     beta = F.softplus(beta) + 1.0
@@ -577,7 +606,7 @@ class PPOAgent(AgentBase):
                     old_log_prob =torch.sum(old_log_prob_batch[ri],dim=1, keepdim=True)
 
                 elif self.configs.dist_type == "gaussian":
-                    _, policy_dist = self.actor_net(enc, pt)
+                    _, policy_dist = self.actor_net(enc_train, pt_train, traj_point_start_mb)
                     mean = torch.clamp(policy_dist, -1, 1)
                     log_std = self.log_std.expand_as(mean)
                     std = torch.exp(log_std)
@@ -643,7 +672,7 @@ class PPOAgent(AgentBase):
 
         # for debug
         a = actor_loss.detach().cpu().numpy()[0][0]
-        b = critic_loss.item()
+        b = critic_loss.mean().item()
         return a, b
 
     def save(self, path: str = None, params_only: bool = None) -> None: # to be replaced

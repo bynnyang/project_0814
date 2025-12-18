@@ -50,8 +50,8 @@ def action_rescale(action:np.ndarray, action_space, raw_action_range=(-1,1), exp
     return action   
 
 def observation_rescale(obs):
-    if obs['img'] is not None:
-        obs['img'] = obs['img'].transpose((2,0,1))
+    if obs['image'] is not None:
+        obs['image'] = obs['image'].transpose((2,0,1))
     return obs
 
 
@@ -66,9 +66,9 @@ class CarParkingWrapper(Wrapper):
         self.action_func = action_func
         self.obs_func = observation_func
         self.observation_shape = {k:self.env.observation_space[k].shape for k in self.env.observation_space}
-        if 'img' in self.observation_shape:
-            w,h,c = self.observation_shape['img']
-            self.observation_shape['img'] = (c,w,h)
+        if 'image' in self.observation_shape:
+            w,h,c = self.observation_shape['image']
+            self.observation_shape['image'] = (c,w,h)
 
     def step(self, action=None):
         if action is None:
