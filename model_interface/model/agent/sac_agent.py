@@ -6,11 +6,11 @@ import torch.nn.functional as F
 from torch.distributions import Normal
 import numpy as np
 
-from model.agent_base import ConfigBase, AgentBase
-from model.network import *
-from model.replay_memory import ReplayMemory
-from model.state_norm import StateNorm
-from model.action_mask import ActionMask
+from model_interface.model.agent_base import ConfigBase, AgentBase
+from model_interface.model.network import *
+from model_interface.model.replay_memory import ReplayMemory
+from model_interface.model.state_norm import StateNorm
+from env.action_mask import ActionMask
 
 class SACCriticAdapter(nn.Module):
     def __init__(self, configs: dict, action_dim:int=2):

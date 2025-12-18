@@ -121,6 +121,11 @@ class CarParking(gym.Env):
         self.observation_space['target'] = spaces.Box(
             low=low_bound, high=high_bound, shape=(self.tgt_repr_size,), dtype=np.float32
         )
+        low_bound = np.array([-10.0, -10.0, -1, -1])
+        high_bound = np.array([10.0, 10.0, 1, 1, 1])
+        self.observation_space['park_target_point'] = spaces.Box(
+            low=low_bound, high=high_bound, shape=(4,), dtype=np.float32
+        )
     
     def set_level(self, level:str=None):
         if level is None:
@@ -326,6 +331,11 @@ class CarParking(gym.Env):
             math.cos(rel_dest_heading), math.sin(rel_dest_heading)])
         return tgt_repr   #获得[rel_distance, math.cos(rel_angle), math.sin(rel_angle), math.cos(rel_dest_heading), math.sin(rel_dest_heading)]
 
+    def _get_park_targrt_point(self,):
+        dest_pos = (self.dest_pose_vcs.loc.x, self.dest_pose_vcs.loc.y, self.dest_pose_vcs.heading)
+        tgt_point = np.array([self.dest_pose_vcs.loc.x, self.dest_pose_vcs.loc.y, math.cos(
+            self.dest_pose_vcs.heading), math.sin(self.dest_pose_vcs.heading)])
+        return tgt_point  
     def render(self, mode: str = "human"):
         assert mode in self.metadata["render_mode"]
         assert self.vehicle is not None
@@ -343,7 +353,7 @@ class CarParking(gym.Env):
 
         self.screen.fill(BG_COLOR)
         self.coord_transform_to_vcs(self.vehicle.state, self.map.obstacles, self.map.dest)
-        observation = {'img':None, 'lidar':None, 'target':None, 'action_mask':None}
+        observation = {'img':None, 'lidar':None, 'target':None, 'action_mask':None, 'park_target_point':None}
         if self.use_img_observation:
             raw_observation = self._get_img_observation()
             observation['img'] = self._process_img_observation(raw_observation)
@@ -351,10 +361,16 @@ class CarParking(gym.Env):
             observation['lidar'] = self._get_lidar_observation()
         if self.use_action_mask:
             observation['action_mask'] = self.action_filter.get_steps(observation['lidar'])
-        observation['target'] = self._get_targt_repr() #获得[rel_distance, math.cos(rel_angle), math.sin(rel_angle), math.cos(rel_dest_heading), math.cos(rel_dest_heading)]
+        observation['target'] = self._get_targt_repr() #获得[rel_distance, math.cos(rel_angle), math.sin(rel_angle), math.cos(rel_dest_heading), math.sin(rel_dest_heading)]
+        observation['park_target_point'] = self._get_park_targrt_point()
         pygame.display.update()
         self.clock.tick(self.fps)
-        
+
+        observation['lidar'] = observation['lidar'] / LIDARRANGE
+        observation['target'][0] = np.clip(observation['target'][0] / np.sqrt(TRAJXRANGE**2 + TRAJYRANGE**2), -1.0, 1.0)
+        observation['park_target_point'][0] = np.clip(observation['target'][0] / TRAJXRANGE, -1.0, 1.0)
+        observation['park_target_point'][1] = np.clip(observation['park_target_point'][1] / TRAJYRANGE, -1.0, 1.0)
+
         return observation
 
     def find_rs_path(self,status):

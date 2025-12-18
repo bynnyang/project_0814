@@ -24,7 +24,7 @@ def _get_surrounding_obstacle(dest:State, obstacles:list):
             no_consider_obsts=detected_obstacle))
     return detected_obstacle
 
-def get_map_level(start:State, dest:State, obstacle_list:list):
+def get_map_level(start:State, dest:State, obstacle_list:list, slot_type = None):
     '''
     get the difficulty of a map.
 
@@ -52,7 +52,7 @@ def get_map_level(start:State, dest:State, obstacle_list:list):
     obst_left, obst_right, obst_front, obst_back = _get_surrounding_obstacle(dest, obstacles)
     dest_rb, dest_rf, dest_lf, dest_lb = list(dest.create_box().coords)[:-1]
     # determind the parking case: bay, parallel
-    if obst_left and obst_right and (obst_front is None): # bay oarking
+    if obst_left and obst_right and (slot_type == 40002 or slot_type == 40003) : # bay oarking
         if distance_exceed or not _has_enough_space(dest, obstacles, width=MIN_PARK_LOT_WIDTH_DICT['Normal']):
             return LEVEL_COMPLEX
         # use shapely `MultiPoint.minimum_rotated_rectangle` method to get the minimum free space
@@ -75,12 +75,12 @@ def get_map_level(start:State, dest:State, obstacle_list:list):
                 free_space_valid = False
         return LEVEL_NORMAL if free_space_valid else LEVEL_COMPLEX
 
-    elif obst_front and obst_back: # parallel parking
+    elif obst_front and obst_back and slot_type == 40001: # parallel parking
         if distance_exceed or not _has_enough_space(dest, obstacles, length=MIN_PARK_LOT_LEN_DICT['Normal']):
             return LEVEL_COMPLEX
         out_direction = dest.heading + np.pi/2
         if np.cos(out_direction)*(start.loc.x-dest.loc.x) + \
-            np.sin(out_direction)*(start.loc.y-dest.loc.y) < 0:
+            np.sin(out_direction)*(start.loc.y-dest.loc.y) < 0:  #用点积判断start 在 dest 的哪一侧，比较的是与out_direction构成向量，这个是为了选取更贴近起点一侧的两个角点作为“前/后关键点”，从而构造自由空间矩形
             out_direction += np.pi
             key_pt_front = dest_rf
             key_pt_back = dest_rb

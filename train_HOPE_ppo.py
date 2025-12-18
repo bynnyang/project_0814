@@ -18,6 +18,7 @@ from env.env_wrapper import CarParkingWrapper
 from env.vehicle import VALID_SPEED,Status
 from evaluation.eval_utils import eval
 from vehicle_config import *
+from utils.config import get_train_config_obj
 
 
 class SceneChoose():
@@ -30,8 +31,8 @@ class SceneChoose():
         self.target_success_rate = np.array([0.95, 0.95, 0.9, 0.99])
         self.success_record = {}
         for scene_name in self.scene_types:
-            self.success_record[scene_name] = []
-        self.scene_record = []
+            self.success_record[scene_name] = []    #四类场景的成功率，key为 0 1 2 3
+        self.scene_record = []  #记录 历史上每一轮选过的 scene id
         self.history_horizon = 200
         
         
@@ -50,17 +51,25 @@ class SceneChoose():
         self.success_record[self.scene_record[-1]].append(success)
 
     def _choose_case_uniform(self,):
-        case_count = np.zeros(len(self.scene_types))
+        case_count = np.zeros(len(self.scene_types))   #case_count = [0, 0, 0, 0] 统计最近一段时间内，每种 scene 被选了多少次
         for i in range(min(len(self.scene_record), self.history_horizon)):
-            scene_id = self.scene_record[-(i+1)]
-            case_count[scene_id] += 1
-        return np.argmin(case_count)
+            scene_id = self.scene_record[-(i+1)]  #从最近的开始回放，先看最后一个选的是什么场景（0，1，2，3）
+            case_count[scene_id] += 1   #case_count = [80, 50, 20, 50]
+        return np.argmin(case_count) #返回最小的index，表示场景号（0, 1 , 2, 3)中间的一个
     
+    '''
+        success_record = {
+        0: [1,1,1,1,0,...],  # Normal
+        1: [1,0,0,1,...],    # Complex
+        2: [0,0,0,1,...],    # Extrem
+        3: [1,1,1,1,...],    # dlp
+        }
+    '''
     def _choose_case_worst_perform(self,):
         success_rate = []
         for i in self.success_record.keys():
             idx = int(i)
-            recent_success_record = self.success_record[idx][-min(250, len(self.success_record[idx])):]
+            recent_success_record = self.success_record[idx][-min(250, len(self.success_record[idx])):] #[-min(250, len(self.success_record[idx])):] 表示的是近250次的数组，[0,1,1...]构成
             success_rate.append(np.sum(recent_success_record)/len(recent_success_record))
         fail_rate = self.target_success_rate - np.array(success_rate)
         fail_rate = np.clip(fail_rate, 0.01, 1)
@@ -69,7 +78,7 @@ class SceneChoose():
 
 class DlpCaseChoose():
     def __init__(self) -> None:
-        self.dlp_case_num = 248
+        self.dlp_case_num = 63  # 从248改为63
         self.case_record = []
         self.case_success_rate = {}
         for i in range(self.dlp_case_num):
@@ -79,7 +88,7 @@ class DlpCaseChoose():
     def choose_case(self,):
         if np.random.random()<0.2 or len(self.case_record)<self.horizon:
             return np.random.randint(0, self.dlp_case_num)
-        success_rate = []
+        success_rate = []    #success_rate的维度是和self.dlp_case_num一致的
         for i in range(self.dlp_case_num):
             idx = str(i)
             if len(self.case_success_rate[idx]) <= 1:
@@ -90,7 +99,7 @@ class DlpCaseChoose():
         fail_rate = 1-np.array(success_rate)
         fail_rate = np.clip(fail_rate, 0.005, 1)
         fail_rate = fail_rate/np.sum(fail_rate)
-        return np.random.choice(np.arange(len(fail_rate)), p=fail_rate)
+        return np.random.choice(np.arange(len(fail_rate)), p=fail_rate)   #失败率大的case更容易被抽中，返回的是ID
     
     def update_success_record(self, success:int, case_id:int):
         self.case_success_rate[str(case_id)].append(success)
@@ -106,7 +115,10 @@ if __name__=="__main__":
     parser.add_argument('--eval_episode', type=int, default=2000)
     parser.add_argument('--verbose', type=bool, default=True)
     parser.add_argument('--visualize', type=bool, default=True)
+    parser.add_argument('--config', default='./config/training_real.yaml', type=str)
     args = parser.parse_args()
+    config_path = args.config
+    config_obj = get_train_config_obj(config_path)
 
     verbose = args.verbose
 
@@ -127,7 +139,7 @@ if __name__=="__main__":
         os.makedirs(save_path)
     writer = SummaryWriter(save_path)
     # configs log
-    copyfile('./configs.py', save_path+'configs.txt')
+    copyfile('./vehicle_config.py', save_path+'vehicle_config.txt')
     print("You can track the training process by command 'tensorboard --log-dir %s'" % save_path)
 
     seed = SEED
@@ -150,7 +162,7 @@ if __name__=="__main__":
         "critic_layers": critic_params,
     }
 
-    rl_agent = PPO(configs)
+    rl_agent = PPO(config_obj, configs)
     checkpoint_path = args.agent_ckpt
     if checkpoint_path is not None:
         rl_agent.load(checkpoint_path, params_only=True)
@@ -172,9 +184,10 @@ if __name__=="__main__":
     case_id_list = []
     succ_record = []
     best_success_rate = [0, 0, 0, 0]
+    total_env_steps = 0 
 
     for i in range(args.train_episode):
-        scene_chosen = scene_chooser.choose_case()
+        scene_chosen = scene_chooser.choose_case() #返回的是场景字符串
         if scene_chosen == 'dlp':
             case_id = dlp_case_chooser.choose_case()
         else:
@@ -196,10 +209,11 @@ if __name__=="__main__":
             reward_per_state_list.append(reward)
             parking_agent.push_memory((obs, action, reward, done, log_prob, next_obs))
             obs = next_obs
+            total_env_steps += 1
             if len(parking_agent.memory) % parking_agent.configs.batch_size == 0:
                 if verbose:
                     print("Updating the agent.")
-                actor_loss, critic_loss = parking_agent.update()
+                actor_loss, critic_loss = parking_agent.update(total_env_steps)
                 writer.add_scalar("actor_loss", actor_loss, i)
                 writer.add_scalar("critic_loss", critic_loss, i)
             

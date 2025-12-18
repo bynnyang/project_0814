@@ -16,7 +16,7 @@ from model_interface.model.network import MultiObsEmbedding
 class TrajInputEmbedding(nn.Module):
     def __init__(self, d_model):
         super().__init__()
-        # 把 3 维 (x,y,θ) 映射到 d_model
+        # 把 4 维 (x,y,cosθ, sinθ) 映射到 d_model
         self.proj = nn.Linear(4, d_model)
 
     def forward(self, x):

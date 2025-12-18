@@ -90,7 +90,8 @@ def create_map_data(data_dir, map_data):
         if slot_type != 40002:
             print(task_path)
         parking_goal = create_parking_goal_gt(traje_info_obj, judge_world2ego_mat, switch_side)
-        ego_index = np.random.randint(0, traje_info_obj.total_frames -1)
+        start_id = int((traje_info_obj.total_frames -1) / 2)
+        ego_index = np.random.randint(start_id, traje_info_obj.total_frames -1)
         obstacles = create_clusters_info_vcs(cluster_info_obj, judge_world2ego_mat, ego_index, switch_side)
         start_pose = (0.0, 0.0, 0.0)
         map_data.append((start_pose, parking_goal, obstacles, slot_type))

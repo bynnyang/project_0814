@@ -217,7 +217,8 @@ class ActionMask():
         possible_actions = np.array(self.action_space)
         # deal the scaling
         scale_steer = VALID_STEER[1]
-        scale_speed = 1
+        # scale_speed = 1
+        scale_speed = VALID_SPEED[1] 
         possible_actions = possible_actions/np.array([scale_steer, scale_speed])
         prob = calculate_probability(action_mean, action_std, possible_actions)
         exp_prob = np.exp(prob) * action_mask
@@ -225,3 +226,116 @@ class ActionMask():
         actions = np.arange(len(possible_actions))
         action_chosen = np.random.choice(actions, p=prob_softmax)
         return possible_actions[action_chosen]
+    
+
+
+# class ActionFilter:
+#     def __init__(self, action_space, scale_steer, scale_speed, eps=1e-12):
+#         """
+#         action_space: list of [steer_phys, speed_phys] 或者你存的任何二维动作（物理量）
+#         scale_*: 用于映射到 norm 空间（和预训练一致）
+#         """
+#         self.action_space = np.array(action_space, dtype=np.float32)  # (K, 2) 物理动作
+#         self.scale = np.array([scale_steer, scale_speed], dtype=np.float32)
+#         self.eps = eps
+
+#         # 预先把候选动作映射到 norm 空间（K,2）
+#         self.actions_norm = self.action_space / self.scale
+
+#     @staticmethod
+#     def _gaussian_logpdf(actions, mean, std):
+#         """
+#         actions: (K, D)
+#         mean,std: (D,)
+#         return: (K,)  log N(actions | mean, std) assuming independent dims
+#         """
+#         z = (actions - mean) / std
+#         logp_each_dim = -0.5 * (z ** 2) - np.log(np.sqrt(2.0 * np.pi) * std)
+#         logp = np.sum(logp_each_dim, axis=-1)
+#         return logp
+
+#     def sample_exec(self, mean, std, action_mask):
+#         """
+#         mean,std: torch.Tensor or np.ndarray, shape (D,) or (1,D)
+#         action_mask: torch.Tensor or np.ndarray, shape (K,) or (1,K)
+#         Return:
+#           action_norm (np.ndarray, shape (D,))
+#           action_index (int)
+#           log_prob_exec (float)  # log π_exec(k|s)
+#           probs (np.ndarray, shape (K,))  # 可选 debug
+#         """
+#         # to numpy & squeeze
+#         if hasattr(mean, "detach"):
+#             mean = mean.detach().cpu().numpy()
+#         if hasattr(std, "detach"):
+#             std = std.detach().cpu().numpy()
+#         if hasattr(action_mask, "detach"):
+#             action_mask = action_mask.detach().cpu().numpy()
+
+#         mean = np.squeeze(mean)       # (D,)
+#         std  = np.squeeze(std)        # (D,)
+#         mask = np.squeeze(action_mask).astype(np.float32)  # (K,)
+
+#         # 防止 std 过小
+#         std = np.maximum(std, 1e-6)
+
+#         # 1) log N(a_k | mean, std)
+#         logp = self._gaussian_logpdf(self.actions_norm, mean, std)  # (K,)
+
+#         # 2) mask：不可行动作置为 -inf（严格数学意义）
+#         logp_masked = np.where(mask > 0.5, logp, -np.inf)
+
+#         # 3) 归一化：log-sum-exp
+#         max_logp = np.max(logp_masked)
+#         if not np.isfinite(max_logp):
+#             # 全不可行，给一个兜底：退化为均匀选（或你自定义）
+#             valid_idx = np.where(mask > 0.5)[0]
+#             if len(valid_idx) == 0:
+#                 # 真的一个都没有：硬兜底选 0
+#                 k = 0
+#                 return self.actions_norm[k], int(k), float(-np.inf), None
+#             k = int(np.random.choice(valid_idx))
+#             # 均匀分布 log_prob
+#             log_prob_exec = -np.log(len(valid_idx))
+#             return self.actions_norm[k], k, float(log_prob_exec), None
+
+#         # logsumexp over valid
+#         exp_shifted = np.exp(logp_masked - max_logp)  # invalid -> exp(-inf)=0
+#         Z = np.sum(exp_shifted) + self.eps
+#         probs = exp_shifted / Z
+
+#         # 4) 采样
+#         k = int(np.random.choice(np.arange(len(probs)), p=probs))
+
+#         # 5) 严格一致 log_prob_exec
+#         log_prob_exec = np.log(probs[k] + self.eps)
+
+#         return self.actions_norm[k], k, float(log_prob_exec), probs
+
+#     def log_prob_exec(self, mean, std, action_mask, action_index):
+#         """
+#         给 PPO update 用：在当前 mean,std 下，计算同一个 action_index 的 log π_exec
+#         """
+#         if hasattr(mean, "detach"):
+#             mean = mean.detach().cpu().numpy()
+#         if hasattr(std, "detach"):
+#             std = std.detach().cpu().numpy()
+#         if hasattr(action_mask, "detach"):
+#             action_mask = action_mask.detach().cpu().numpy()
+
+#         mean = np.squeeze(mean)
+#         std  = np.maximum(np.squeeze(std), 1e-6)
+#         mask = np.squeeze(action_mask).astype(np.float32)
+
+#         logp = self._gaussian_logpdf(self.actions_norm, mean, std)
+#         logp_masked = np.where(mask > 0.5, logp, -np.inf)
+
+#         max_logp = np.max(logp_masked)
+#         if not np.isfinite(max_logp):
+#             return float(-np.inf)
+
+#         exp_shifted = np.exp(logp_masked - max_logp)
+#         Z = np.sum(exp_shifted) + self.eps
+#         probs = exp_shifted / Z
+
+#         return float(np.log(probs[int(action_index)] + self.eps))

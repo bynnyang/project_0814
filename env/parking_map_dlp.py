@@ -52,7 +52,7 @@ class ParkingMapDLP(object):
             if case_id >= len(self.map_data):
                 case_id = case_id%len(self.map_data)
             self.case_id = case_id
-        start, dest, obstacles = self.map_data[self.case_id][:3]
+        start, dest, obstacles, slot_type = self.map_data[self.case_id][:4]
         # if len(self.map_data[self.case_id]) == 4:
         #     self.traj_path = self.map_data[self.case_id][3]
         if isinstance(start, tuple):
@@ -78,11 +78,11 @@ class ParkingMapDLP(object):
             color=(150, 150, 150, 255)) for obs in obstacles])
         self.n_obstacle = len(self.obstacles)
         self.filter_obstacles()
-        if random() > 0.5:
-            self.flip_dest_orientation()
-        if random() > 0.5:
-            self.flip_start_orientation()
-        self.map_level = get_map_level(self.start, self.dest, self.obstacles)
+        # if random() > 0.5:
+        #     self.flip_dest_orientation()
+        # if random() > 0.5:
+        #     self.flip_start_orientation()
+        self.map_level = get_map_level(self.start, self.dest, self.obstacles, slot_type)
 
         return self.start
     

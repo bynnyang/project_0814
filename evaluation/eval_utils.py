@@ -11,7 +11,7 @@ from tqdm import trange
 
 from env.vehicle import Status
 from env.map_level import get_map_level
-from configs import *
+from vehicle_config import *
 
 def eval(env, agent, episode=2000, log_path='', multi_level=False, post_proc_action=True):
 

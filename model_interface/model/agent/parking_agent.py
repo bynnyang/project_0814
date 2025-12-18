@@ -115,8 +115,8 @@ class ParkingAgent(object):
     def push_memory(self, experience):
         self.agent.push_memory(experience)
 
-    def update(self,):
-        return self.agent.update()
+    def update(self, step):
+        return self.agent.update(step)
     
     def save(self, *args, **kwargs ):
         self.agent.save(*args, **kwargs )

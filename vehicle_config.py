@@ -21,7 +21,7 @@ VehicleBox = LinearRing([
 VALID_SPEED = [-1.2, 1.2]
 VALID_STEER = [-0.62, 0.62]
 
-NUM_STEP = 10 #这个记得改为匹配模型的0.2s  也就是NUM_STEP = 4
+NUM_STEP = 4 #这个记得改为匹配模型的0.2s  也就是NUM_STEP = 4
 STEP_LENGTH = 5e-2
 
 USE_LIDAR = True
@@ -43,12 +43,12 @@ N_DISCRETE_ACTION = len(discrete_actions)
 
 
 GAMMA = 0.98
-BATCH_SIZE = 8192
-LR = 5e-6
+BATCH_SIZE = 2048
+LR = 1e-4 #LR = 5e-6
 TAU = 0.1
 MAX_TRAIN_STEP = 1e6
 ORTHOGONAL_INIT = True
-LR_DECAY = False
+LR_DECAY = True
 UPDATE_IMG_ENCODE = False
 
 C_CONV = [4, 8]
@@ -193,3 +193,7 @@ TRAJ_BOX_COLOR         = (0, 200, 0)   # 亮绿：缩小小车 box
 
 RS_MAX_DIST = 10
 TOLERANT_TIME = 200
+
+TRAJXRANGE: 10.0
+TRAJYRANGE: 10.0
+LIDARRANGE: 10.0

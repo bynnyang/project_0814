@@ -10,14 +10,14 @@ import torch
 from torch.utils.tensorboard import SummaryWriter
 
 # from model.MultiModalPPO_AF import PPO
-from model.agent.ppo_agent import PPOAgent as PPO
-from model.agent.sac_agent import SACAgent as SAC
-from model.agent.parking_agent import ParkingAgent, RsPlanner
+from model_interface.model.agent.ppo_agent import PPOAgent as PPO
+from model_interface.model.agent.sac_agent import SACAgent as SAC
+from model_interface.model.agent.parking_agent import ParkingAgent, RsPlanner
 from env.car_parking_base import CarParking
 from env.env_wrapper import CarParkingWrapper
 from env.vehicle import VALID_SPEED
 from evaluation.eval_utils import eval
-from configs import *
+from vehicle_config import *
 
 
 if __name__=="__main__":

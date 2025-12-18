@@ -62,7 +62,7 @@ class KSModel(object):
         self.n_step = n_step
         self.speed_range = speed_range
         self.angle_range = angle_range
-        self.mini_iter = 20
+        self.mini_iter = 1
 
 
     def step(self, state: State, action: list, step_time:int=NUM_STEP) -> State:

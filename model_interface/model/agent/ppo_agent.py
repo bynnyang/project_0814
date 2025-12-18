@@ -6,13 +6,24 @@ import torch.nn.functional as F
 from torch.distributions import Categorical, Normal, Beta
 import numpy as np
 
-from model.agent_base import ConfigBase, AgentBase
-from model.network import *
-from model.replay_memory import ReplayMemory
-from model.state_norm import StateNorm
-from model.action_mask import ActionMask
+from model_interface.model.agent_base import ConfigBase, AgentBase
+from model_interface.model.network import *
+from model_interface.model.replay_memory import ReplayMemory
+from model_interface.model.state_norm import StateNorm
+from env.action_mask import ActionMask
+from typing import Optional
+from model_interface.model.parking_model_real import TrajInputEmbedding
+from model_interface.model.trajectory_decoder import TrajectoryDecoderONNX
+import itertools
+from utils.config import Configuration
 
-
+def _extract_sub_state_dict(state_dict, prefix: str):
+    out = {}
+    plen = len(prefix)
+    for k, v in state_dict.items():
+        if k.startswith(prefix):
+            out[k[plen:]] = v
+    return out
 class PPOConfig(ConfigBase):
     def __init__(self, configs):
         super().__init__()
@@ -20,11 +31,13 @@ class PPOConfig(ConfigBase):
         # hyperparameters
         self.lr_actor = self.lr
         self.lr_critic = self.lr*5
+        self.lr_backbone = 2e-5
+        self.lr_log_std = 1e-3
         self.adam_epsilon = 1e-8
         self.dist_type = "gaussian"
         self.hidden_size = 256
         self.mini_epoch = 10
-        self.mini_batch = 32
+        self.mini_batch = 256
 
         self.clip_epsilon = 0.2
         self.lambda_ = 0.95
@@ -32,7 +45,7 @@ class PPOConfig(ConfigBase):
 
         # tricks
         self.adv_norm = True
-        self.state_norm = True
+        self.state_norm = False
         self.reward_norm = False
         self.use_gae = True
         self.reward_scaling = False
@@ -42,16 +55,116 @@ class PPOConfig(ConfigBase):
 
         self.merge_configs(configs)
 
+class CriticNetwork(nn.Module):
+    """
+    Input:
+      encoder_out: (B, N, D)  # 来自 shared multi_encoder
+      point_out:   (B, D) optional  # 如果你actor也用这个global context，critic建议也用
+    Output:
+      value: (B, 1)
+    """
+    def __init__(
+        self,
+        embed_dim: int,
+        n_layers: int = 2,
+        n_heads: int = 4,
+        ff_dim: Optional[int] = None,
+        dropout: float = 0.0,
+        use_cls: bool = True,
+        use_point_token: bool = True,
+        value_hidden: int = 256,
+    ):
+        super().__init__()
+        self.embed_dim = embed_dim
+        self.use_cls = use_cls
+        self.use_point_token = use_point_token
+
+        ff_dim = ff_dim or 4 * embed_dim
+
+        layer = nn.TransformerEncoderLayer(
+            d_model=embed_dim,
+            nhead=n_heads,
+            dim_feedforward=ff_dim,
+            dropout=dropout,
+            activation="gelu",
+            batch_first=True,
+            norm_first=True,
+        )
+        self.tr = nn.TransformerEncoder(layer, num_layers=n_layers)
+
+        if use_cls:
+            self.cls = nn.Parameter(torch.zeros(1, 1, embed_dim))
+            nn.init.trunc_normal_(self.cls, std=0.02)
+
+        if use_point_token:
+            self.point_proj = nn.Sequential(
+                nn.LayerNorm(embed_dim),
+                nn.Linear(embed_dim, embed_dim),
+                nn.GELU(),
+            )
+
+        self.value_head = nn.Sequential(
+            nn.LayerNorm(embed_dim),
+            nn.Linear(embed_dim, value_hidden),
+            nn.GELU(),
+            nn.Linear(value_hidden, 1),
+        )
+
+        self.orthogonal_init()
+
+    def orthogonal_init(self):
+        for m in self.modules():
+            if isinstance(m, nn.Linear):
+                # 最后一层（value head）gain 要小
+                if m.out_features == 1:
+                    nn.init.orthogonal_(m.weight, gain=0.01)
+                else:
+                    nn.init.orthogonal_(m.weight, gain=1.0)
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0.0)
+
+    def forward(
+        self,
+        encoder_out: torch.Tensor,             # (B,N,D)
+        point_out: Optional[torch.Tensor]=None,# (B,D)
+        key_padding_mask: Optional[torch.Tensor]=None, # (B, N_total) True=mask
+    ) -> torch.Tensor:
+        B, N, D = encoder_out.shape
+        assert D == self.embed_dim
+
+        tokens = []
+
+        if self.use_cls:
+            tokens.append(self.cls.expand(B, 1, D))      # (B,1,D)
+
+        tokens.append(encoder_out)                       # (B,N,D)
+
+        if self.use_point_token and point_out is not None:
+            pt = self.point_proj(point_out).unsqueeze(1) # (B,1,D)
+            tokens.append(pt)
+
+        x = torch.cat(tokens, dim=1)                     # (B, N_total, D)
+
+        h = self.tr(x, src_key_padding_mask=key_padding_mask)
+
+        if self.use_cls:
+            pooled = h[:, 0, :]                          # CLS pooling
+        else:
+            pooled = h.mean(dim=1)                       # mean pooling baseline
+
+        return self.value_head(pooled)                   # (B,1)
+
 
 class PPOAgent(AgentBase):
     def __init__(
-        self, configs: dict, discrete: bool = False, verbose: bool = False,
+        self, config_obj: Configuration, configs: dict, discrete: bool = False, verbose: bool = False,
         save_params: bool = False, load_params: bool = False
     ) -> None:
 
         super().__init__(PPOConfig, configs, verbose, save_params, load_params)
         self.discrete = discrete
         self.action_filter = ActionMask()
+        self.cfg = config_obj
 
         # debug
         self.actor_loss_list = []
@@ -67,55 +180,114 @@ class PPOAgent(AgentBase):
         # tricks
         if self.configs.state_norm:
             self.state_normalize = StateNorm(self.configs.observation_shape)
-
         
-    def _init_network(self):
+    
+    def load_pretrained_from_parkingmodelreal_ckpt(self, ckpt_path: str, strict: bool = False):
+        ckpt = torch.load(ckpt_path, map_location=self.device)
+        state_dict = ckpt["state_dict"]   # 你的保存函数就是这个结构
+
+        # 1) multi_encoder
+        me_sd = _extract_sub_state_dict(state_dict, "multi_encoder.")
+        missing, unexpected = self.multi_encoder.load_state_dict(me_sd, strict=strict)
+        print(f"[load] multi_encoder: loaded={len(me_sd)}, missing={len(missing)}, unexpected={len(unexpected)}")
+
+        # 2) target_point_encoder
+        tp_sd = _extract_sub_state_dict(state_dict, "target_point_encoder.")
+        missing, unexpected = self.target_point_encoder.load_state_dict(tp_sd, strict=strict)
+        print(f"[load] target_point_encoder: loaded={len(tp_sd)}, missing={len(missing)}, unexpected={len(unexpected)}")
+
+        # 3) actor / trajectory decoder
+        dec_sd = _extract_sub_state_dict(state_dict, "trajectory_decoder.")
+        missing, unexpected = self.actor_net.load_state_dict(dec_sd, strict=strict)
+        print(f"[load] actor_net(trajectory_decoder): loaded={len(dec_sd)}, missing={len(missing)}, unexpected={len(unexpected)}")
+
+    def freeze_multi_encoder_embed_img(self):
+        if hasattr(self.multi_encoder, "embed_img"):
+            # 1. 关闭梯度
+            for p in self.multi_encoder.embed_img.parameters():
+                p.requires_grad = False
+
+            # 2. 固定 BN / Dropout 行为（如果 ConvBlock 里有）
+            self.multi_encoder.embed_img.eval()
+
+            print("[freeze] multi_encoder.embed_img frozen.")
+
+    def build_optimizer(self):
+        param_groups = [
+            {
+                "params": [p for p in self.multi_encoder.parameters() if p.requires_grad],
+                "lr": self.configs.lr_backbone,
+            },
+            {
+                "params": [p for p in self.target_point_encoder.parameters() if p.requires_grad],
+                "lr": self.configs.lr_actor,
+            },
+            {
+                "params": [p for p in self.actor_net.parameters() if p.requires_grad],
+                "lr": self.configs.lr_actor,
+            },
+            {
+                "params": [self.log_std],
+                "lr": self.configs.lr_log_std,   # 可单独控制
+            },
+            {
+                "params": [p for p in self.critic_net.parameters() if p.requires_grad],
+                "lr": self.configs.lr_critic,
+            },
+        ]
+
+        self.actor_critic_optimizer = torch.optim.Adam(param_groups)
+
+    def _init_network(self, pretrain_ckpt_path=None):
         '''
         Initialize 1.the network, 2.the optimizer, 3.the checklist.
         '''
-        self.actor_net = \
-            MultiObsEmbedding(self.configs.actor_layers).to(self.device)
-        if self.configs.dist_type == "gaussian":
-            self.log_std = \
-                nn.Parameter(
-                    torch.zeros(1, self.configs.action_dim), requires_grad=False
-                ).to(self.device)
-            self.log_std.requires_grad = True
-            self.actor_optimizer = \
-                torch.optim.Adam(
-                    [{'params':self.actor_net.parameters()}, {'params': self.log_std}], 
-                    self.configs.lr_actor, 
-                    # eps=self.configs.lr_actor
-                )
-        else:
-            self.actor_optimizer = \
-                torch.optim.Adam(
-                    self.actor_net.parameters(), 
-                    eps=self.configs.lr_actor
-                )
 
-        self.critic_net = \
-            MultiObsEmbedding(self.configs.critic_layers).to(self.device)
-        self.critic_optimizer = \
-            torch.optim.Adam(
-                self.critic_net.parameters(), 
-                self.configs.lr_critic,
-                eps=self.configs.adam_epsilon
-            )
+        self.multi_encoder = MultiObsEmbedding(self.configs.actor_layers).to(self.device)
+        
+         
+        self.target_point_encoder = TrajInputEmbedding(self.cfg.global_graph_width).to(self.device)
+
+        self.actor_net = TrajectoryDecoderONNX(self.cfg).to(self.device)
+
+        self.critic_net = CriticNetwork(self.configs.actor_layers["embed_size"]).to(self.device)
+
         self.critic_target = deepcopy(self.critic_net).to(self.device)
+
+        if pretrain_ckpt_path is not None:
+            self.load_pretrained_from_parkingmodelreal_ckpt(pretrain_ckpt_path, strict=False)
+            self.freeze_multi_encoder_embed_img()
+
+        self.log_std = \
+            nn.Parameter(
+                torch.zeros(1, self.configs.action_dim), requires_grad=True
+            ).to(self.device)
+        self.build_optimizer()
+   
+            
+        for n, p in self.multi_encoder.named_parameters():
+            if "embed_img" in n:
+                assert p.requires_grad is False
         
         # save and load
-        self.check_list = [ # (name, item, save_state_dict)
+        self.check_list = [  # (name, item, save_state_dict)
             ("configs", self.configs, 0),
-            ("actor_net", self.actor_net, 1),
-            ("actor_optimizer", self.actor_optimizer, 1),
-            ("critic_net", self.critic_net, 1),
-            ("critic_optimizer", self.critic_optimizer, 1),
-            ("critic_target", self.critic_target, 1)
-        ]
-        if self.configs.dist_type == "gaussian":
-            self.check_list.append(("log_std", self.log_std, 0))
 
+            # 共享/actor侧
+            ("multi_encoder", self.multi_encoder, 1),
+            ("target_point_encoder", self.target_point_encoder, 1),
+            ("actor_net", self.actor_net, 1),
+
+            # critic
+            ("critic_net", self.critic_net, 1),
+            ("critic_target", self.critic_target, 1),
+
+            # optimizer
+            ("actor_critic_optimizer", self.actor_critic_optimizer, 1),
+
+            # gaussian policy 的可学习方差
+            ("log_std", self.log_std, 1),
+        ]
     def _actor_forward(self, obs) -> torch.distributions.Distribution: # to be replaced
         observation = deepcopy(obs)
         if self.configs.state_norm:
@@ -123,18 +295,22 @@ class PPOAgent(AgentBase):
         observation = self.obs2tensor(observation)
         
         with torch.no_grad():
-            policy_dist = self.actor_net(observation)
-            if len(policy_dist.shape) > 1 and policy_dist.shape[0] > 1:
-                raise NotImplementedError
+            encoder_out = self.multi_encoder(observation)
+            point_out = self.target_point_encoder(observation['park_target_point'])
+            _, policy_out = self.actor_net(encoder_out, point_out)
+            if policy_out.dim() == 2 and policy_out.size(0) > 1:
+                raise NotImplementedError("Actor forward expects single-sample inference, got batch > 1")
+            if policy_out.dim() == 2 and policy_out.size(0) == 1:
+                policy_out = policy_out.squeeze(0)  # -> (act_dim,)
             if self.discrete:
-                dist = Categorical(F.softmax(policy_dist, dim=1))
+                dist = Categorical(F.softmax(policy_out, dim=1))
             elif self.configs.dist_type == "beta":
-                alpha, beta = torch.chunk(policy_dist, 2, dim=-1)
+                alpha, beta = torch.chunk(policy_out, 2, dim=-1)
                 alpha = F.softplus(alpha) + 1.0
                 beta = F.softplus(beta) + 1.0
                 dist = Beta(alpha, beta)
             elif self.configs.dist_type == "gaussian":
-                mean =  torch.clamp(policy_dist,-1,1)  
+                mean =  torch.clamp(policy_out,-1,1)  
                 log_std = self.log_std.expand_as(mean)  # To make 'log_std' have the same dimension as 'mean'
                 std = torch.exp(log_std)
                 dist = Normal(mean, std)
@@ -166,6 +342,52 @@ class PPOAgent(AgentBase):
         action, other_info = self._post_process_action(dist, action_mask)
                 
         return action, other_info
+    
+    # def _post_process_action(self, action_dist, action_mask=None):
+    #     if action_mask is not None:
+    #         mean, std = action_dist.mean, action_dist.stddev
+
+    #         # 1) 用离散执行策略采样（严格一致）
+    #         action_norm_np, action_index, log_prob_exec, _ = \
+    #             self.action_filter.sample_exec(mean, std, action_mask)
+
+    #         action = torch.as_tensor(action_norm_np, dtype=torch.float32, device=self.device)
+
+    #         # 注意：这里 log_prob 已经是 π_exec 的 log_prob（不是 Normal 的 log_prob）
+    #         log_prob = torch.tensor([log_prob_exec], dtype=torch.float32, device=self.device)
+
+    #         # 你最好把 action_index 也返回并存进 memory（强烈建议）
+    #         other_info = {
+    #             "log_prob": log_prob,
+    #             "action_index": action_index,
+    #         }
+
+    #     else:
+    #         # 无 mask：就是真正从 Normal 采样，此时 log_prob 用 Normal 的即可（一致）
+    #         action = action_dist.sample()
+    #         if (not self.discrete) and (self.configs.dist_type == "gaussian"):
+    #             action = torch.clamp(action, -1, 1)
+
+    #         log_prob = action_dist.log_prob(action)
+    #         if log_prob.dim() > 0:
+    #             log_prob = log_prob.sum(dim=-1, keepdim=True)  # 多维动作求和
+
+    #         other_info = {"log_prob": log_prob, "action_index": None}
+
+    #     action_np = action.detach().cpu().numpy().flatten()
+    #     log_prob_np = other_info["log_prob"].detach().cpu().numpy().flatten()
+    #     return action_np, other_info  # 这里我建议把 other_info 返回，包含 action_index
+    
+    # def choose_action(self, obs):
+    #     dist = self._actor_forward(obs)
+    #     action_mask = obs.get("action_mask", None)
+
+    #     action, info = self._post_process_action(dist, action_mask)
+
+    #     # info: {"log_prob": tensor([..]), "action_index": int or None}
+    #     # 你把它存进 memory：action、log_prob、action_index
+    #     return action, info
+
 
     def get_action(self, obs: np.ndarray):
         '''Take action based on one observation. 
@@ -198,6 +420,36 @@ class PPOAgent(AgentBase):
         log_prob = dist.log_prob(action)
         log_prob = log_prob.detach().cpu().numpy().flatten()
         return log_prob
+    
+    '''
+    连续动作空间
+        # 策略网络输出
+        mean, std = policy_network(state)
+        action_dist = torch.distributions.Normal(mean, std)
+
+        # 采样动作
+        action = action_dist.sample()
+
+        # 计算对数概率（用于策略梯度）
+        log_prob = action_dist.log_prob(action)  # 这里要使用高斯公式计算一下概率密度
+        # 形状: [batch_size, action_dim]
+
+        # 通常需要压缩为标量
+        log_prob = log_prob.sum(dim=-1)  # [batch_size]
+
+    离散动作区间
+        # 策略网络输出 logits
+        logits = policy_network(state)
+        action_dist = torch.distributions.Categorical(logits=logits)
+
+        # 采样动作
+        action = action_dist.sample()
+
+        # 计算对数概率
+        log_prob = action_dist.log_prob(action)  # 这里计算的就是这个离散的action被选中的概率
+        # 形状: [batch_size]
+
+    '''
 
     def push_memory(self, observations):
         '''
@@ -233,7 +485,7 @@ class PPOAgent(AgentBase):
     def get_obs(self, obs, ids):
         return {k:obs[k][ids] for k in obs }
 
-    def update(self): # to be replaced
+    def update(self, step): # to be replaced
         # convert batches to tensors
 
         # GAE computation cannot use shuffled data
@@ -254,32 +506,48 @@ class PPOAgent(AgentBase):
         next_state_batch = self.obs2tensor(batches["next_obs"])
         self.memory.clear()
 
+        def encode_obs(obs_dict):
+            """
+            obs_dict: dict[str, Tensor], shapes follow your obs2tensor
+            """
+            encoder_out = self.multi_encoder(obs_dict)  # 通常输出 (B, N, D) 或 (B, D)
+
+            # ⚠️ 如果你的 target_point_encoder 只吃某个字段，比如 obs_dict["target_point"]
+            # 请改成：point_out = self.target_point_encoder(obs_dict["target_point"])
+            point_out = self.target_point_encoder(obs_dict['park_target_point'])
+
+            return encoder_out, point_out
+
         # GAE
         gae = 0
-        adv = []
+        adv_list = []
 
         with torch.no_grad():
-            value = self.critic_net(state_batch)
-            next_value = self.critic_net(next_state_batch)
+            enc, pt = encode_obs(state_batch)
+            next_enc, next_pt = encode_obs(next_state_batch)
+            value = self.critic_net(enc, pt)
+            next_value = self.critic_net(next_enc, next_pt)
             deltas = reward_batch + self.configs.gamma * (1 - done_batch) * next_value - value
             if self.configs.use_gae:
                 for delta, done in zip(reversed(deltas.cpu().flatten().numpy()), reversed(done_batch.cpu().flatten().numpy())):
                     gae = delta + self.configs.gamma * self.configs.lambda_ * gae * (1.0 - done)
-                    adv.append(gae)
-                adv.reverse()
-                adv = torch.FloatTensor(adv).view(-1, 1).to(self.device)
+                    adv_list.append(gae)
+                adv_list.reverse()
+                # adv = torch.FloatTensor(adv_list).view(-1, 1).to(self.device)
+                adv = torch.as_tensor(adv_list, dtype=torch.float32, device=self.device).view(-1, 1)
             else:
                 adv = deltas
-            v_target = adv + self.critic_target(state_batch) #Vtarget​(st​)=AtGAE​+V(st​)≈Q(st​,at​)  实际上是在拟合构造 “Q-like target”  所以要加上AtGAE，就是构造TD target，所以要计算一下
+            v_target = (adv + self.critic_target(enc, pt)).detach() #Vtarget​(st​)=AtGAE​+V(st​)≈Q(st​,at​)  实际上是在拟合构造 “Q-like target”  所以要加上AtGAE，就是构造TD target，所以要计算一下
+            
             if self.configs.adv_norm: # advantage normalization
                 adv = (adv - adv.mean()) / (adv.std() + 1e-5)
         
         # apply multi update epoch
+        mini_batch = self.configs.mini_batch
+        batchsize = self.configs.batch_size
+        train_times = batchsize//mini_batch if batchsize%mini_batch==0 else batchsize//mini_batch+1
         for _ in range(self.configs.mini_epoch):
             # use mini batch and shuffle data
-            mini_batch = self.configs.mini_batch
-            batchsize = self.configs.batch_size
-            train_times = batchsize//mini_batch if batchsize%mini_batch==0 else batchsize//mini_batch+1
             random_idx = np.arange(batchsize)
             np.random.shuffle(random_idx)
             for i in range(train_times):
@@ -288,14 +556,17 @@ class PPOAgent(AgentBase):
                 else:
                     ri = random_idx[i*mini_batch:(i+1)*mini_batch]
                 # state = state_batch[ri]
-                state = self.get_obs(state_batch, ri)
+                obs = self.get_obs(state_batch, ri)  # 仍然返回 dict[str, Tensor]
+                enc, pt = encode_obs(obs)
                 if self.discrete:
-                    dist = Categorical(F.softmax(self.actor_net(state),dim=-1))
+                    _, policy_dist = self.actor_net(enc, pt)
+                    dist = Categorical(F.softmax(policy_dist,dim=-1))
                     dist_entropy = dist.entropy().view(-1, 1)
                     log_prob= dist.log_prob(action_batch[ri].squeeze()).view(-1, 1)
                     old_log_prob = old_log_prob_batch[ri].view(-1,1)
+
                 elif self.configs.dist_type == "beta":
-                    policy_dist = self.actor_net(state)
+                    _, policy_dist = self.actor_net(enc, pt)
                     alpha, beta = torch.chunk(policy_dist, 2, dim=-1)
                     alpha = F.softplus(alpha) + 1.0
                     beta = F.softplus(beta) + 1.0
@@ -304,8 +575,9 @@ class PPOAgent(AgentBase):
                     log_prob = dist.log_prob(action_batch[ri])
                     log_prob =torch.sum(log_prob,dim=1, keepdim=True)
                     old_log_prob =torch.sum(old_log_prob_batch[ri],dim=1, keepdim=True)
+
                 elif self.configs.dist_type == "gaussian":
-                    policy_dist = self.actor_net(state)
+                    _, policy_dist = self.actor_net(enc, pt)
                     mean = torch.clamp(policy_dist, -1, 1)
                     log_std = self.log_std.expand_as(mean)
                     std = torch.exp(log_std)
@@ -315,33 +587,59 @@ class PPOAgent(AgentBase):
                     log_prob =torch.sum(log_prob,dim=1, keepdim=True)
                     old_log_prob =torch.sum(old_log_prob_batch[ri],dim=1, keepdim=True)
                 prob_ratio = (log_prob - old_log_prob).exp()
+                ''''
+                # 取该样本当时存的 action_index
+                    k = batches["action_index"][ri]   # 需要你在 memory 里存下来
 
+                    # 用 action_filter 计算 new_log_prob_exec（逐样本）
+                    new_log_probs = []
+                    for b in range(len(ri)):
+                        new_lp = self.action_filter.log_prob_exec(
+                            mean[b], std[b], obs["action_mask"][b], int(k[b])
+                        )
+                        new_log_probs.append(new_lp) 
+
+                    new_log_prob = torch.tensor(new_log_probs, device=self.device).view(-1,1) #维度是(b,1)
+                    old_log_prob = old_log_prob_batch[ri].view(-1,1)
+
+                prob_ratio = (new_log_prob - old_log_prob).exp()
+                '''
                 loss1 = prob_ratio * adv[ri]
                 loss2 = torch.clamp(prob_ratio, 1 - self.configs.clip_epsilon, 1 + self.configs.clip_epsilon) * adv[ri]
 
                 actor_loss = - torch.min(loss1, loss2)
                 if self.configs.policy_entropy:
-                    actor_loss += - self.configs.entropy_coef * dist_entropy
-                critic_loss = F.mse_loss(v_target[ri], self.critic_net(state))
+                    actor_loss = actor_loss - self.configs.entropy_coef * dist_entropy
 
-                self.actor_optimizer.zero_grad()
-                self.critic_optimizer.zero_grad()
-                actor_loss.mean().backward()
-                critic_loss.mean().backward()
+                v_pred = self.critic_net(enc)
+                critic_loss = F.mse_loss(v_target[ri], v_pred, reduction="none")
+
+                self.actor_critic_optimizer.zero_grad(set_to_none=True)
+                total_loss = actor_loss.mean() + critic_loss.mean()
+                total_loss.backward()
                 
                 self.actor_loss_list.append(actor_loss.mean().item())
                 self.critic_loss_list.append(critic_loss.mean().item())
-                if self.configs.gradient_clip: # gradient clip
-                    nn.utils.clip_grad_norm_(self.critic_net.parameters(), 0.5)
-                    nn.utils.clip_grad_norm(self.actor_net.parameters(), 0.5)
-                self.actor_optimizer.step()
-                self.critic_optimizer.step() 
+                if self.configs.gradient_clip:
+                # 对所有可训练参数一起 clip（包含 log_std）
+                    trainable_params = [p for p in itertools.chain(
+                        self.multi_encoder.parameters(),
+                        self.target_point_encoder.parameters(),
+                        self.actor_net.parameters(),
+                        self.critic_net.parameters(),
+                        [self.log_std],
+                    ) if p.requires_grad]
+                    nn.utils.clip_grad_norm_(trainable_params, 0.5)
+            self.actor_critic_optimizer.step()
 
             self._soft_update(self.critic_target, self.critic_net)
 
         if self.configs.lr_decay: # learning rate decay
-            self.actor_optimizer.param_groups["lr"] = self.lr_decay(self.configs.lr_actor)
-            self.critic_optimizer.param_groups["lr"] = self.lr_decay(self.configs.lr_critic)
+            self.actor_critic_optimizer.param_groups[0]["lr"] = self.lr_decay(self.configs.lr_backbone, step)
+            self.actor_critic_optimizer.param_groups[1]["lr"] = self.lr_decay(self.configs.lr_actor, step)
+            self.actor_critic_optimizer.param_groups[2]["lr"] = self.lr_decay(self.configs.lr_actor, step)
+            self.actor_critic_optimizer.param_groups[3]["lr"] = self.lr_decay(self.configs.lr_log_std, step)
+            self.actor_critic_optimizer.param_groups[4]["lr"] = self.lr_decay(self.configs.lr_critic, step)
 
         # for debug
         a = actor_loss.detach().cpu().numpy()[0][0]
@@ -354,14 +652,11 @@ class PPOAgent(AgentBase):
         if params_only is not None:
             self.save_params = params_only
         if self.save_params and len(self.check_list) > 0:
-            checkpoint = dict()
+            checkpoint = {}
             for name, item, save_state_dict in self.check_list:
                 checkpoint[name] = item.state_dict() if save_state_dict else item
             # for PPO extra save
-            if self.configs.dist_type == "gaussian":
-                checkpoint['log'] = self.log_std
             checkpoint['state_norm'] = self.state_normalize # (self.state_mean, self.state_std, self.S, self.n_state)
-            checkpoint['optimizer'] = (self.actor_optimizer, self.critic_optimizer)
             torch.save(checkpoint, path)
         else:
             torch.save(self, path)
@@ -376,46 +671,41 @@ class PPOAgent(AgentBase):
             self.load_params = params_only
         if self.load_params and len(self.check_list) > 0:
             checkpoint = torch.load(path, map_location=self.device)
+
+            # 1) 按 check_list 加载
             for name, item, save_state_dict in self.check_list:
-                if save_state_dict:
-                    item.load_state_dict(checkpoint[name])
-                else:
-                    item = checkpoint[name]
-
-            self.log_std.data.copy_(checkpoint['log']) 
-            
-            self.state_normalize = checkpoint['state_norm'] 
-            if 'optimizer' in checkpoint.keys():
-                self.actor_optimizer, self.critic_optimizer = checkpoint['optimizer']
-        else:
-            torch.load(self, path)
-        
-            path =f"{path}/{name}_{id}.pth"
-            state_dict = torch.load(path, map_location=self.device)
-            object.load_state_dict(state_dict)
-
-        if self.verbose:
-            print("Load the model from %s" % path)
-
-    def load_actor(self, path: str = None) -> None: # to be replaced
-        """Load the model structure and corresponding parameters from a file.
-        """
-        if len(self.check_list) > 0:
-            checkpoint = torch.load(path, map_location=self.device)
-            for name, item, save_state_dict in self.check_list:
-                if name != 'actor_net':
+                if name not in checkpoint:
+                    # 允许老 ckpt 缺少新字段（例如早期没有 log_std）
+                    if getattr(self, "verbose", False):
+                        print(f"[load][WARN] key '{name}' not in checkpoint, skip.")
                     continue
+
                 if save_state_dict:
-                    item.load_state_dict(checkpoint[name])
+                    # state_dict 加载
+                    missing, unexpected = item.load_state_dict(checkpoint[name], strict=False)
+                    if getattr(self, "verbose", False) and (missing or unexpected):
+                        print(f"[load][WARN] {name}: missing={len(missing)} unexpected={len(unexpected)}")
                 else:
-                    item = checkpoint[name]
+                    # 直接赋值到 self 上（注意：item = xxx 不会写回 self）
+                    setattr(self, name, checkpoint[name])
 
-            self.log_std.data.copy_(checkpoint['log']) 
-            # self.actor_target_net = deepcopy(self.actor_net).to(self.device)
-            self.state_normalize = checkpoint['state_norm']
+            # 2) 恢复 state normalize
+            if "state_norm" in checkpoint:
+                self.state_normalize = checkpoint["state_norm"]
 
-    def load_img_encoder(self, path: str = None, require_grad: bool = False) -> None:
-        self.actor_net.load_img_encoder(path, self.device, require_grad)
-        self.critic_net.load_img_encoder(path, self.device, require_grad)
-        self.critic_target = deepcopy(self.critic_net).to(self.device)
-        print('Load pretrained image encoder from path: %s'%path)
+            if self.configs.dist_type == "gaussian":
+                found = any(
+                    self.log_std is p
+                    for g in self.actor_critic_optimizer.param_groups
+                    for p in g["params"]
+                )
+                if not found and getattr(self, "verbose", False):
+                    print("[load][WARN] log_std not found in optimizer param_groups. "
+                        "Make sure build_optimizer() adds it before load().")
+
+        else:
+            obj = torch.load(path, map_location=self.device)
+            raise RuntimeError("Loading full object is not supported safely here. Use params_only=True.")
+
+        if getattr(self, "verbose", False):
+            print(f"Load the model from {path}")

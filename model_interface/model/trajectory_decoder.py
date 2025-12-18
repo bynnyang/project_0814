@@ -350,6 +350,24 @@ class ONNXTransformerDecoderLayer(nn.Module):
 
         output = self.ffn(x)
         x = self.norm3(x + self.dropout3(output))
+        '''
+        等价的norm_first=True的写法，强化学习PPO重新使用该方法
+
+        x = tgt
+        sa = self.self_attn(self.norm1(x), self.norm1(x), self.norm1(x),
+                        tgt_mask, tgt_key_padding_mask)
+        x = x + self.dropout1(sa)
+
+        # cross-attn
+        ca = self.cross_attn(self.norm2(x), src, src)
+        x = x + self.dropout2(ca)
+
+        # ffn
+        ff = self.ffn(self.norm3(x))
+        x = x + self.dropout3(ff)
+
+
+        '''
         return x
 
 
@@ -453,7 +471,7 @@ class TrajectoryDecoderONNX(nn.Module):
         delta_norm    = action[:, 0]
         v_norm = action[:, 1]
 
-        v     = v_norm * VALID_SPEED[1]      # 映射到 [0, v_max]，你也可以直接 v = v_norm * cfg.v_max
+        v     = v_norm * VALID_SPEED[1]      # 映射到 [-v_max, v_max]，你也可以直接 v = v_norm * cfg.v_max
         delta = delta_norm * VALID_STEER[1]            # [-steer_max, steer_max]
 
         # 3. 单轨运动学模型离散更新
@@ -490,6 +508,9 @@ class TrajectoryDecoderONNX(nn.Module):
         if global_step is not None:
             self.update_scheduled_sampling_ratio(global_step)
 
+        if global_step == -1:
+            self.scheduled_sampling_ratio = 0.0
+
         global_context = point_out
         
         # 保存原始目标序列
@@ -499,6 +520,7 @@ class TrajectoryDecoderONNX(nn.Module):
         assert feat_dim == 4
         output_sequence = torch.zeros_like(tgt)
         output_sequence[:, 0,:] = tgt[:, 0, :]
+        pred_actions_list = []
 
         for t in range(1, seq_len):
             # 创建当前输入序列
@@ -519,6 +541,7 @@ class TrajectoryDecoderONNX(nn.Module):
             # 获取最后一步的预测
             last_step_pred_action_logti = pred_actions_logtis[:, -1, :]
             last_step_pred_action = self.output_layer(last_step_pred_action_logti)
+            pred_actions_list.append(last_step_pred_action)
             
             prev_point = output_sequence[:, t-1, :].detach()          # [B,4]
             pred_point = self.kinematic_step(prev_point, last_step_pred_action)  # [B,4]
@@ -543,7 +566,8 @@ class TrajectoryDecoderONNX(nn.Module):
 
         pred_actions_logtis = self.decoder(encoder_out, tgt_embedding, tgt_mask)
         pred_actions = self.output_layer(pred_actions_logtis)
-        return pred_actions
+        pred_actions_list.append(pred_actions)
+        return pred_actions, pred_actions_list[0]
     
 
     def predict(self, encoder_out, point_out, tgt):
