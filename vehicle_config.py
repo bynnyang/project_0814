@@ -107,8 +107,9 @@ from typing import OrderedDict
 REWARD_WEIGHT = OrderedDict({'time_cost':1,\
             'rs_dist_reward':0,\
             'dist_reward':5,\
-            'angle_reward':0,\
-            'box_union_reward':10,})
+            'angle_reward':5,\
+            'box_union_reward':10,
+            'gear_shift_reward':1.0,})
 
 
 FPS = 100
@@ -123,10 +124,12 @@ MAX_PARK_LOT_LEN_DICT = {'Extrem':LENGTH+0.9,
                             'Complex':LENGTH*1.25,
                             'Normal':LENGTH*1.25+0.5}
 MIN_PARK_LOT_WIDTH_DICT = {
+    'Extrem':WIDTH+0.4,
     'Complex':WIDTH+0.4,
     'Normal':WIDTH+0.85,
 }
 MAX_PARK_LOT_WIDTH_DICT = {
+    'Extrem':WIDTH+0.85,
     'Complex':WIDTH+0.85,
     'Normal':WIDTH+1.2,
 }
@@ -136,6 +139,7 @@ PARA_PARK_WALL_DIST_DICT = {
     'Normal':4.5,
 }
 BAY_PARK_WALL_DIST_DICT = {
+    'Extrem':6.0,
     'Complex':6.0,
     'Normal':7.0,
 }
@@ -156,7 +160,7 @@ OBS_W = 512
 OBS_H = 512
 RENDER_TRAJ = True
 MAX_DIST_TO_DEST = 14.15
-ENV_COLLIDE = False
+ENV_COLLIDE = True
 
 
 BG_COLOR = (0, 0, 0)

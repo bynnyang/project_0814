@@ -227,10 +227,30 @@ class CarParking(gym.Env):
             prev_arrive_reward = self.accum_arrive_reward
             self.accum_arrive_reward = box_union_reward
             box_union_reward -= prev_arrive_reward
-        return [time_cost ,rs_dist_reward ,dist_reward ,angle_reward ,box_union_reward]
+        # Gear shift reward (D<->R). First shift is free, subsequent shifts: -2 each.
+        def gear_sign(v: float) -> int:
+            # treat v==0 as "no gear" (ignored)
+            return 1 if v > 0 else (-1 if v < 0 else 0)
+
+        prev_gear = gear_sign(prev_state.speed)
+        curr_gear = gear_sign(curr_state.speed)
+
+        # lazy init counter/flag
+        if not hasattr(self, "_gear_shift_seen"):
+            self._gear_shift_seen = False  # whether we have already counted the first shift
+
+        gear_reward = 0
+        # count shift only when both gears are valid and sign changes
+        if prev_gear != 0 and curr_gear != 0 and prev_gear != curr_gear:
+            if self._gear_shift_seen:
+                gear_reward = -0.1
+            else:
+                # first shift is free
+                self._gear_shift_seen = True
+        return [time_cost ,rs_dist_reward ,dist_reward ,angle_reward ,box_union_reward, gear_reward]
         
     def get_reward(self, status, prev_state):
-        reward_info = [0,0,0,0,0]
+        reward_info = [0,0,0,0,0,0]
         if status == Status.CONTINUE:
             reward_info = self._get_reward(prev_state, self.vehicle.state)
         return reward_info
@@ -269,6 +289,7 @@ class CarParking(gym.Env):
                         collide = ENV_COLLIDE
                         self.vehicle.retreat(prev_info)
                     else:
+                        collide = ENV_COLLIDE
                         self.vehicle.retreat(prev_info)
                     simu_step_num -= 1
                     break
@@ -289,7 +310,8 @@ class CarParking(gym.Env):
             'rs_dist_reward':reward_list[1],\
             'dist_reward':reward_list[2],\
             'angle_reward':reward_list[3],\
-            'box_union_reward':reward_list[4],})
+            'box_union_reward':reward_list[4],
+            'gear_shift_reward':reward_list[5]})
 
         info = OrderedDict({'reward_info':reward_info,
             'path_to_dest':None})

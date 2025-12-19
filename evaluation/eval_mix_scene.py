@@ -18,17 +18,21 @@ from env.env_wrapper import CarParkingWrapper
 from env.vehicle import VALID_SPEED
 from evaluation.eval_utils import eval
 from vehicle_config import *
+from utils.config import get_train_config_obj
 
 
 if __name__=="__main__":
 
 
     parser = argparse.ArgumentParser()
-    parser.add_argument('--ckpt_path', type=str, default='./model/ckpt/HOPE_SAC1.pt') # './model/ckpt/HOPE_SAC0.pt'
+    parser.add_argument('--ckpt_path', type=str, default='./rl_model/PPO_best.pt') # './model/ckpt/HOPE_SAC0.pt'
     parser.add_argument('--eval_episode', type=int, default=2000)
     parser.add_argument('--verbose', type=bool, default=True)
     parser.add_argument('--visualize', type=bool, default=True)
+    parser.add_argument('--config', default='./config/training_real.yaml', type=str)
     args = parser.parse_args()
+    config_path = args.config
+    config_obj = get_train_config_obj(config_path)
 
     checkpoint_path = args.ckpt_path
     print('ckpt path: ',checkpoint_path)
@@ -74,12 +78,12 @@ if __name__=="__main__":
     }
     print('observation_space:',env.observation_space)
 
-    rl_agent = Agent_type(configs)
+    rl_agent = Agent_type(config_obj, configs)
     if checkpoint_path is not None:
         rl_agent.load(checkpoint_path, params_only=True)
         print('load pre-trained model!')
 
-    step_ratio = env.vehicle.kinetic_model.step_len*env.vehicle.kinetic_model.n_step*VALID_SPEED[1]
+    step_ratio = env.vehicle.kinetic_model.step_len*env.vehicle.kinetic_model.n_step*1.0
     rs_planner = RsPlanner(step_ratio)
     parking_agent = ParkingAgent(rl_agent, rs_planner)
 

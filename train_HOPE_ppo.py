@@ -263,7 +263,7 @@ if __name__=="__main__":
             success_rate_extreme = np.mean(scene_chooser.success_record[2][-100:])
             success_rate_dlp = np.mean(scene_chooser.success_record[3][-100:])
         if success_rate_normal >= best_success_rate[0] and success_rate_complex >= best_success_rate[1] and\
-            success_rate_extreme >= best_success_rate[2] and success_rate_dlp >= best_success_rate[3] and i>100:
+            success_rate_extreme >= best_success_rate[2] and i>100:
             raw_best_success_rate = np.array([success_rate_normal, success_rate_complex, success_rate_extreme, success_rate_dlp])
             best_success_rate = list(np.minimum(raw_best_success_rate, scene_chooser.target_success_rate))
             parking_agent.save("%s/PPO_best.pt" % (save_path),params_only=True)

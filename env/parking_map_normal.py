@@ -158,6 +158,7 @@ def generate_bay_parking_case(map_level):
         generate_success = False
     # check collision
     obstacles = [obstacle_back, obstacle_left, obstacle_right]
+
     obstacles.extend(non_critical_vehicle)
     for obst in obstacles:
         if obst.intersects(dest_box):
@@ -166,10 +167,23 @@ def generate_bay_parking_case(map_level):
     # generate obstacles out of start range
     max_obstacle_y = max([np.max(np.array(obs.coords)[:,1]) for obs in obstacles])+MIN_DIST_TO_OBST
     other_obstcales = []
-    if random()<0.2: # in this case only a wall will be generate
+    right_wall = None
+    if random()<0.5: # in this case only a wall will be generate
         other_obstcales = [LineString([
         (origin[0]-bay_half_len, bay_PARK_WALL_DIST+max_obstacle_y+MIN_DIST_TO_OBST),
         (origin[0]+bay_half_len, bay_PARK_WALL_DIST+max_obstacle_y+MIN_DIST_TO_OBST)])]
+         #构造断头路车位
+        if map_level == 'Extrem':
+            right_obst_lf_point = get_rand_pos(*car_rf, -pi/12, pi/12, min_dist_to_obst, max_dist_to_obst)
+            right_wall = LinearRing(( 
+                (right_obst_lf_point[0]+1.5, right_obst_lf_point[1]+bay_PARK_WALL_DIST),
+                (right_obst_lf_point[0]+1.5, right_obst_lf_point[1]+0.5), 
+                (right_obst_lf_point[0]+0.5, right_obst_lf_point[1]+0.5),
+                (right_obst_lf_point[0] + 0.5, right_obst_lf_point[1] + bay_PARK_WALL_DIST)))
+        else:
+            right_wall = None
+        if right_wall !=None:
+            other_obstcales.append(right_wall)
     else:
         other_obstacle_range = LinearRing(( 
         (origin[0]-bay_half_len, bay_PARK_WALL_DIST+max_obstacle_y),
@@ -216,6 +230,8 @@ def generate_bay_parking_case(map_level):
     # generate start position
     start_box_valid = False
     valid_start_x_range = (origin[0]-bay_half_len/2, origin[0]+bay_half_len/2)
+    if right_wall != None:
+        valid_start_x_range = (origin[0]-bay_half_len/2, origin[0])
     valid_start_y_range = (max_obstacle_y+1, bay_PARK_WALL_DIST+max_obstacle_y-1)
     while not start_box_valid:
         start_box_valid = True
@@ -497,7 +513,8 @@ class ParkingMapNormal(object):
             start, dest, obstacles = generate_bay_parking_case(self.map_level)
             self.case_id = 0
         else:
-            start, dest, obstacles = generate_parallel_parking_case(self.map_level)
+            # start, dest, obstacles = generate_parallel_parking_case(self.map_level)
+            start, dest, obstacles = generate_bay_parking_case(self.map_level)
             self.case_id = 1
         
         self.start = State(start+[0,0])

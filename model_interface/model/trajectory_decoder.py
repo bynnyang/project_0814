@@ -350,7 +350,7 @@ class ONNXTransformerDecoderLayer(nn.Module):
         ff = self.ffn(self.norm3(x))
         x = x + self.dropout3(ff)
         
-        x = self.final_norm(x)
+        x = self.final_norm(x) #经过实际测试，预训练阶段可以取得更好的效果
 
         '''
         return x

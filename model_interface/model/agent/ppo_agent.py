@@ -276,7 +276,7 @@ class PPOAgent(AgentBase):
 
         self.log_std = \
             nn.Parameter(
-                torch.zeros(1, self.configs.action_dim, device=self.device), requires_grad=True
+                torch.full((1, self.configs.action_dim), -1.0, device=self.device), requires_grad=True
             )
         self.build_optimizer()
    
@@ -311,7 +311,10 @@ class PPOAgent(AgentBase):
         if self.configs.state_norm:
             observation = self.state_normalize.state_norm(observation)
         observation = self.obs2tensor(observation)
-        
+        self.multi_encoder.eval()
+        self.target_point_encoder.eval()
+        self.actor_net.eval()
+            
         with torch.no_grad():
             traj_point_start = self.gt_traj_point.to(self.device)
             traj_point_start = traj_point_start.unsqueeze(1)
@@ -332,6 +335,7 @@ class PPOAgent(AgentBase):
             elif self.configs.dist_type == "gaussian":
                 mean =  torch.clamp(policy_out,-1,1)  
                 log_std = self.log_std.expand_as(mean)  # To make 'log_std' have the same dimension as 'mean'
+                log_std = torch.clamp(log_std, min=-2.0, max=-0.5)
                 std = torch.exp(log_std)
                 dist = Normal(mean, std)
             else:
@@ -340,7 +344,7 @@ class PPOAgent(AgentBase):
         return dist
     
     def _post_process_action(self, action_dist:torch.distributions.Distribution , action_mask=None): # to be replaced
-        if action_mask is not None:
+        if False and action_mask is not None:
             mean, std = action_dist.mean, action_dist.stddev
             action = self.action_filter.choose_action(mean, std, action_mask)
             action = torch.FloatTensor(action).to(self.device)
@@ -512,18 +516,26 @@ class PPOAgent(AgentBase):
         # batches = self.memory.shuffle()
         batches = self.memory.get_items(np.arange(len(self.memory)))
         state_batch = self.obs2tensor(batches["state"])
-        
-        if self.discrete:
-            action_batch = torch.IntTensor(batches["action"]).to(self.device)
-        else:
-            action_batch = torch.FloatTensor(batches["action"]).to(self.device)
-        rewards = torch.FloatTensor(np.array(batches["reward"])).unsqueeze(1)
-        reward_batch = self._reward_norm(rewards) \
-            if self.configs.reward_norm else rewards
-        reward_batch = reward_batch.to(self.device)
-        done_batch = torch.FloatTensor(batches["done"]).to(self.device).unsqueeze(1)
-        old_log_prob_batch = torch.FloatTensor(batches["log_prob"]).to(self.device)
         next_state_batch = self.obs2tensor(batches["next_obs"])
+
+        if self.discrete:
+            action_np = np.asarray(batches["action"], dtype=np.int32)
+            action_batch = torch.from_numpy(action_np).to(self.device)
+        else:
+            action_np = np.asarray(batches["action"], dtype=np.float32)
+            action_batch = torch.from_numpy(action_np).to(self.device)
+        # 3) reward：一次性 numpy 化，并确保 shape=[N,1]
+        reward_np = np.asarray(batches["reward"], dtype=np.float32).reshape(-1, 1)
+        rewards = torch.from_numpy(reward_np).to(self.device)
+        reward_batch = self._reward_norm(rewards) if self.configs.reward_norm else rewards
+
+        # 4) done：很多 buffer 里 done 是 bool；转 float32 并 reshape=[N,1]
+        done_np = np.asarray(batches["done"], dtype=np.float32).reshape(-1, 1)
+        done_batch = torch.from_numpy(done_np).to(self.device)
+
+        # 5) old log prob：同理一次性 numpy 化
+        logp_np = np.asarray(batches["log_prob"], dtype=np.float32)
+        old_log_prob_batch = torch.from_numpy(logp_np).to(self.device)
         self.memory.clear()
 
         def encode_obs(obs_dict):
@@ -541,6 +553,13 @@ class PPOAgent(AgentBase):
         # GAE
         gae = 0
         adv_list = []
+
+        self.multi_encoder.eval()
+        self.target_point_encoder.eval()
+        self.actor_net.eval()
+        self.critic_net.eval()
+        # critic_target 通常保持 eval 即可（本来就是 target）
+        self.critic_target.eval()
 
         with torch.no_grad():
             enc, pt = encode_obs(state_batch)
@@ -561,6 +580,18 @@ class PPOAgent(AgentBase):
             
             if self.configs.adv_norm: # advantage normalization
                 adv = (adv - adv.mean()) / (adv.std() + 1e-5)
+
+
+        self.multi_encoder.train()
+        self.target_point_encoder.train()
+        self.actor_net.train()
+        self.critic_net.train()
+        # critic_target 通常保持 eval 即可（本来就是 target）
+        self.critic_target.eval()
+
+        # 但你冻结的 embed_img 希望永远 eval，就再强制一下：
+        if hasattr(self.multi_encoder, "embed_img"):
+            self.multi_encoder.embed_img.eval()
         
         # apply multi update epoch
         mini_batch = self.configs.mini_batch
@@ -640,7 +671,7 @@ class PPOAgent(AgentBase):
                 if self.configs.policy_entropy:
                     actor_loss = actor_loss - self.configs.entropy_coef * dist_entropy
 
-                v_pred = self.critic_net(enc)
+                v_pred = self.critic_net(enc_train, pt_train)
                 critic_loss = F.mse_loss(v_target[ri], v_pred, reduction="none")
 
                 self.actor_critic_optimizer.zero_grad(set_to_none=True)
@@ -683,9 +714,21 @@ class PPOAgent(AgentBase):
         if self.save_params and len(self.check_list) > 0:
             checkpoint = {}
             for name, item, save_state_dict in self.check_list:
-                checkpoint[name] = item.state_dict() if save_state_dict else item
-            # for PPO extra save
-            checkpoint['state_norm'] = self.state_normalize # (self.state_mean, self.state_std, self.S, self.n_state)
+                if save_state_dict:
+                    if isinstance(item, nn.Module):
+                        checkpoint[name] = item.state_dict()
+                    elif isinstance(item, torch.optim.Optimizer):
+                        checkpoint[name] = item.state_dict()
+                    elif isinstance(item, nn.Parameter):
+                        checkpoint[name] = item.detach().cpu()
+                    elif torch.is_tensor(item):
+                        checkpoint[name] = item.detach().cpu()
+                    else:
+                        checkpoint[name] = item  # 例如 configs 这种
+                else:
+                    checkpoint[name] = item
+            if self.configs.state_norm:
+                checkpoint['state_norm'] = self.state_normalize # (self.state_mean, self.state_std, self.S, self.n_state)
             torch.save(checkpoint, path)
         else:
             torch.save(self, path)
@@ -699,24 +742,51 @@ class PPOAgent(AgentBase):
         if params_only is not None:
             self.load_params = params_only
         if self.load_params and len(self.check_list) > 0:
-            checkpoint = torch.load(path, map_location=self.device)
+            checkpoint = torch.load(path, map_location=self.device, weights_only=False)
 
             # 1) 按 check_list 加载
             for name, item, save_state_dict in self.check_list:
                 if name not in checkpoint:
-                    # 允许老 ckpt 缺少新字段（例如早期没有 log_std）
                     if getattr(self, "verbose", False):
                         print(f"[load][WARN] key '{name}' not in checkpoint, skip.")
                     continue
 
+                ckpt_val = checkpoint[name]
+
                 if save_state_dict:
-                    # state_dict 加载
-                    missing, unexpected = item.load_state_dict(checkpoint[name], strict=False)
-                    if getattr(self, "verbose", False) and (missing or unexpected):
-                        print(f"[load][WARN] {name}: missing={len(missing)} unexpected={len(unexpected)}")
+                    # (a) nn.Module / Optimizer：用 load_state_dict
+                    if isinstance(item, nn.Module):
+                        missing, unexpected = item.load_state_dict(ckpt_val, strict=False)
+                        if getattr(self, "verbose", False) and (missing or unexpected):
+                            print(f"[load][WARN] {name}: missing={len(missing)} unexpected={len(unexpected)}")
+
+                    elif isinstance(item, torch.optim.Optimizer):
+                        item.load_state_dict(ckpt_val)
+
+                    # (b) nn.Parameter：用 data.copy_ 恢复
+                    elif isinstance(item, nn.Parameter):
+                        # ckpt_val 可能是 cpu tensor
+                        t = ckpt_val.to(self.device)
+                        if item.data.shape != t.shape:
+                            raise RuntimeError(f"[load][ERR] {name} shape mismatch: "
+                                            f"param {tuple(item.data.shape)} vs ckpt {tuple(t.shape)}")
+                        item.data.copy_(t)
+
+                    # (c) Tensor：copy_
+                    elif torch.is_tensor(item):
+                        t = ckpt_val.to(self.device)
+                        if item.shape != t.shape:
+                            raise RuntimeError(f"[load][ERR] {name} shape mismatch: "
+                                            f"tensor {tuple(item.shape)} vs ckpt {tuple(t.shape)}")
+                        item.copy_(t)
+
+                    else:
+                        # 兜底：如果 item 不是上面几类，就直接 setattr（但一般不建议走到这）
+                        setattr(self, name, ckpt_val)
+
                 else:
-                    # 直接赋值到 self 上（注意：item = xxx 不会写回 self）
-                    setattr(self, name, checkpoint[name])
+                    # 直接赋值到 self 上（configs 这类）
+                    setattr(self, name, ckpt_val)
 
             # 2) 恢复 state normalize
             if "state_norm" in checkpoint:
