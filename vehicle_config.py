@@ -1,7 +1,15 @@
 import numpy as np
 import torch
+import os
 #########################
-device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
+# device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
+if "LOCAL_RANK" in os.environ:
+    local_rank = int(os.environ["LOCAL_RANK"])
+    torch.cuda.set_device(local_rank)
+    device = torch.device(f"cuda:{local_rank}")
+else:
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
 SEED = 42
 # vehicle
 WHEEL_BASE = 2.615  # wheelbase

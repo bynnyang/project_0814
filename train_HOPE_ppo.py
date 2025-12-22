@@ -9,6 +9,7 @@ import argparse
 import numpy as np
 import matplotlib.pyplot as plt
 import torch
+import torch.distributed as dist
 from torch.utils.tensorboard import SummaryWriter
 
 from model_interface.model.agent.ppo_agent import PPOAgent as PPO
@@ -19,6 +20,24 @@ from env.vehicle import VALID_SPEED,Status
 from evaluation.eval_utils import eval
 from vehicle_config import *
 from utils.config import get_train_config_obj
+import torch.distributed as dist
+
+def setup_distributed():
+    if "LOCAL_RANK" in os.environ:
+        local_rank = int(os.environ["LOCAL_RANK"])
+        torch.cuda.set_device(local_rank)
+        dist.init_process_group(backend="nccl", init_method="env://")
+
+        device = torch.device(f"cuda:{local_rank}")
+        distributed = True
+        rank = dist.get_rank()
+        world_size = dist.get_world_size()
+    else:
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        distributed = False
+        rank = 0
+        world_size = 1
+    return device, distributed, rank, world_size
 
 
 class SceneChoose():
@@ -137,16 +156,23 @@ if __name__=="__main__":
     save_path = relative_path+'/log/exp/ppo_%s/' % timestamp
     if not os.path.exists(save_path):
         os.makedirs(save_path)
-    writer = SummaryWriter(save_path)
+    device, distributed, rank, world_size = setup_distributed()
+    writer = SummaryWriter(save_path) if rank == 0 else None
+    if dist.is_available() and dist.is_initialized():
+        if dist.get_rank() == 0:
+            print("DDP world_size =", dist.get_world_size())
     # configs log
-    copyfile('./vehicle_config.py', save_path+'vehicle_config.txt')
-    print("You can track the training process by command 'tensorboard --log-dir %s'" % save_path)
+    if rank == 0:
+        copyfile('./vehicle_config.py', save_path+'vehicle_config.txt')
+    if rank == 0:
+        print("You can track the training process by command 'tensorboard --log-dir %s'" % save_path)
 
-    seed = SEED
+    seed = SEED + rank
     # env.seed(seed)
     env.action_space.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
 
     actor_params = ACTOR_CONFIGS
     critic_params = CRITIC_CONFIGS
@@ -214,8 +240,9 @@ if __name__=="__main__":
                 if verbose:
                     print("Updating the agent.")
                 actor_loss, critic_loss = parking_agent.update(total_env_steps)
-                writer.add_scalar("actor_loss", actor_loss, i)
-                writer.add_scalar("critic_loss", critic_loss, i)
+                if (not parking_agent.distributed) or parking_agent.rank == 0:
+                    writer.add_scalar("actor_loss", actor_loss, i)
+                    writer.add_scalar("critic_loss", critic_loss, i)
             
             if info['path_to_dest'] is not None:
                 parking_agent.set_planner_path(info['path_to_dest'])
@@ -232,15 +259,17 @@ if __name__=="__main__":
                     if scene_chosen == 'dlp':
                         dlp_case_chooser.update_success_record(0, case_id)
 
-            
-        writer.add_scalar("total_reward", total_reward, i)
-        writer.add_scalar("avg_reward", np.mean(reward_per_state_list[-1000:]), i)
-        writer.add_scalar("action_std0", parking_agent.log_std.detach().cpu().numpy().reshape(-1)[0],i)
-        writer.add_scalar("action_std1", parking_agent.log_std.detach().cpu().numpy().reshape(-1)[1],i)
-        for type_id in scene_chooser.scene_types:
-            writer.add_scalar("success_rate_%s"%scene_chooser.scene_types[type_id],
-                np.mean(scene_chooser.success_record[type_id][-100:]), i)
-        writer.add_scalar("step_num", step_num, i)
+        if (not parking_agent.distributed) or parking_agent.rank == 0:    
+            writer.add_scalar("total_reward", total_reward, i)
+            writer.add_scalar("avg_reward", np.mean(reward_per_state_list[-1000:]), i)
+            bundle = parking_agent.agent._unwrap(parking_agent.agent.bundle)
+            log_std = bundle.log_std.detach().cpu().numpy().reshape(-1)
+            writer.add_scalar("action_std0", log_std[0],i)
+            writer.add_scalar("action_std1", log_std[1],i)
+            for type_id in scene_chooser.scene_types:
+                writer.add_scalar("success_rate_%s"%scene_chooser.scene_types[type_id],
+                    np.mean(scene_chooser.success_record[type_id][-100:]), i)
+            writer.add_scalar("step_num", step_num, i)
         reward_list.append(total_reward)
         reward_info = np.sum(np.array(reward_info), axis=0)
         reward_info = np.round(reward_info,2)
@@ -248,7 +277,9 @@ if __name__=="__main__":
 
         if verbose and i%10==0 and i>0:
             print('success rate:',np.sum(succ_record),'/',len(succ_record))
-            print(parking_agent.log_std.detach().cpu().numpy().reshape(-1))
+            bundle = parking_agent.agent._unwrap(parking_agent.agent.bundle)
+            log_std = bundle.log_std.detach().cpu().numpy().reshape(-1)
+            print(log_std)
             print("episode:%s  average reward:%s"%(i,np.mean(reward_list[-50:])))
             print(np.mean(parking_agent.actor_loss_list[-100:]),np.mean(parking_agent.critic_loss_list[-100:]))
             print('time_cost ,rs_dist_reward ,dist_reward ,angle_reward ,box_union_reward')
@@ -266,13 +297,23 @@ if __name__=="__main__":
             success_rate_extreme >= best_success_rate[2] and i>100:
             raw_best_success_rate = np.array([success_rate_normal, success_rate_complex, success_rate_extreme, success_rate_dlp])
             best_success_rate = list(np.minimum(raw_best_success_rate, scene_chooser.target_success_rate))
-            parking_agent.save("%s/PPO_best.pt" % (save_path),params_only=True)
-            f_best_log = open(save_path+'best.txt', 'w')
-            f_best_log.write('epoch: %s, success rate: %s %s %s %s'%(i+1, raw_best_success_rate[0],
-                                raw_best_success_rate[1], raw_best_success_rate[2], raw_best_success_rate[3]))
-            f_best_log.close()
+            if distributed:
+                dist.barrier()
+            if rank == 0:
+                parking_agent.save("%s/PPO_best.pt" % (save_path),params_only=True)
+                f_best_log = open(save_path+'best.txt', 'w')
+                f_best_log.write('epoch: %s, success rate: %s %s %s %s'%(i+1, raw_best_success_rate[0],
+                                    raw_best_success_rate[1], raw_best_success_rate[2], raw_best_success_rate[3]))
+                f_best_log.close()
+            if distributed:
+                dist.barrier()
         if (i+1) % 2000 == 0:
-            parking_agent.save("%s/PPO2_%s.pt" % (save_path, i),params_only=True)
+            if distributed:
+                dist.barrier()
+            if rank == 0:
+                parking_agent.save("%s/PPO2_%s.pt" % (save_path, i),params_only=True)
+            if distributed:
+                dist.barrier()
 
         if verbose and i%20==0:
             episodes = [j for j in range(len(reward_list))]
