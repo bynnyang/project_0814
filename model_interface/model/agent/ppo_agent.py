@@ -347,10 +347,21 @@ class PPOAgent(AgentBase):
 
         if not self.discrete and self.configs.dist_type == "gaussian":
                 action = torch.clamp(action, -1, 1)
-        log_prob = action_dist.log_prob(action)
-        action = action.detach().cpu().numpy().flatten()
-        log_prob = log_prob.detach().cpu().numpy().flatten()
-        return action, log_prob
+        log_prob_t = action_dist.log_prob(action)
+        if not self.discrete:
+        # make sure we sum across action dims
+        # log_prob_t might be shape (action_dim,) or (..., action_dim)
+            log_prob_t = log_prob_t.sum(dim=-1)
+
+        # 4) convert to numpy / python float
+        if self.discrete:
+            # if you ever use discrete, action should be int
+            action_np = int(action.detach().item()) if torch.is_tensor(action) else int(action)
+        else:
+            action_np = action.detach().cpu().numpy().astype(np.float32).reshape(-1)
+
+        log_prob = float(log_prob_t.detach().cpu().item())
+        return action_np, log_prob
 
 
     def choose_action(self, obs):
@@ -570,7 +581,7 @@ class PPOAgent(AgentBase):
         done_batch = torch.from_numpy(done_np).to(self.device)
 
         # 5) old log prob：同理一次性 numpy 化
-        logp_np = np.asarray(batches["log_prob"], dtype=np.float32)
+        logp_np = np.asarray(batches["log_prob"], dtype=np.float32).reshape(-1, 1)
         old_log_prob_batch = torch.from_numpy(logp_np).to(self.device)
         self.memory.clear()
 
@@ -693,7 +704,7 @@ class PPOAgent(AgentBase):
                     dist_entropy = dist.entropy().sum(1, keepdim=True)
                     log_prob = dist.log_prob(action_batch[ri])
                     log_prob =torch.sum(log_prob,dim=1, keepdim=True)
-                    old_log_prob =torch.sum(old_log_prob_batch[ri],dim=1, keepdim=True)
+                    old_log_prob = old_log_prob_batch[ri]
 
                 elif self.configs.dist_type == "gaussian":
                     _, policy_dist = b.actor_net(enc_train, pt_train, traj_point_start_mb)
@@ -704,7 +715,7 @@ class PPOAgent(AgentBase):
                     dist_entropy = dist.entropy().sum(1, keepdim=True)
                     log_prob = dist.log_prob(action_batch[ri])
                     log_prob =torch.sum(log_prob,dim=1, keepdim=True)
-                    old_log_prob =torch.sum(old_log_prob_batch[ri],dim=1, keepdim=True)
+                    old_log_prob = old_log_prob_batch[ri]
                 prob_ratio = (log_prob - old_log_prob).exp()
                 if dist_gpu.is_available() and dist_gpu.is_initialized():
                     rank = dist_gpu.get_rank()

@@ -154,8 +154,14 @@ if __name__=="__main__":
     current_time = time.localtime()
     timestamp = time.strftime("%Y%m%d_%H%M%S", current_time)
     save_path = relative_path+'/log/exp/ppo_%s/' % timestamp
-    if not os.path.exists(save_path):
+    if dist.is_available() and dist.is_initialized():
+        rank = dist.get_rank()
+    else:
+        rank = 0
+    if not os.path.exists(save_path) and rank == 0:
         os.makedirs(save_path)
+    if dist.is_available() and dist.is_initialized():
+        dist.barrier()
     device, distributed, rank, world_size = setup_distributed()
     writer = SummaryWriter(save_path) if rank == 0 else None
     if dist.is_available() and dist.is_initialized():
@@ -282,7 +288,7 @@ if __name__=="__main__":
             print(log_std)
             print("episode:%s  average reward:%s"%(i,np.mean(reward_list[-50:])))
             print(np.mean(parking_agent.actor_loss_list[-100:]),np.mean(parking_agent.critic_loss_list[-100:]))
-            print('time_cost ,rs_dist_reward ,dist_reward ,angle_reward ,box_union_reward')
+            print('time_cost ,rs_dist_reward ,dist_reward ,angle_reward ,box_union_reward ,gear_shift_reward ,abs_shape ,near_bonus')
             for j in range(10):
                 print(case_id_list[-(10-j)],reward_list[-(10-j)],reward_info_list[-(10-j)])
             print("")
