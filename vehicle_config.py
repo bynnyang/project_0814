@@ -114,10 +114,12 @@ REWARD_RATIO = 0.1
 from typing import OrderedDict
 REWARD_WEIGHT = OrderedDict({'time_cost':1,\
             'rs_dist_reward':0,\
-            'dist_reward':5,\
-            'angle_reward':5,\
-            'box_union_reward':10,
-            'gear_shift_reward':1.0,})
+            'dist_reward':15,\
+            'angle_reward':8,\
+            'box_union_reward':6,
+            'gear_shift_reward':8.0,
+            'abs_shape':1.0,
+            'near_bonus':1.0,})
 
 
 FPS = 100

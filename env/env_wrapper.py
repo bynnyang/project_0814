@@ -20,13 +20,13 @@ def reward_shaping(*args):
         for reward_type in REWARD_WEIGHT.keys():
             reward += REWARD_WEIGHT[reward_type]*reward_info[reward_type]
     elif status == Status.OUTBOUND:
-        reward = -50
+        reward = -20
     elif status == Status.OUTTIME:
         reward = -1
     elif status == Status.ARRIVED:
-        reward = 50
+        reward = 20
     elif status == Status.COLLIDED:
-        reward = -50
+        reward = -20
     else:
         print(status)
         print('Never reach here !!!')

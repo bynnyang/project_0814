@@ -237,10 +237,10 @@ if __name__=="__main__":
             obs = next_obs
             total_env_steps += 1
             if len(parking_agent.memory) % parking_agent.configs.batch_size == 0:
-                if verbose:
+                if verbose and rank == 0:
                     print("Updating the agent.")
                 actor_loss, critic_loss = parking_agent.update(total_env_steps)
-                if (not parking_agent.distributed) or parking_agent.rank == 0:
+                if (not parking_agent.distributed) or rank == 0:
                     writer.add_scalar("actor_loss", actor_loss, i)
                     writer.add_scalar("critic_loss", critic_loss, i)
             
@@ -259,7 +259,7 @@ if __name__=="__main__":
                     if scene_chosen == 'dlp':
                         dlp_case_chooser.update_success_record(0, case_id)
 
-        if (not parking_agent.distributed) or parking_agent.rank == 0:    
+        if (not parking_agent.distributed) or rank == 0:    
             writer.add_scalar("total_reward", total_reward, i)
             writer.add_scalar("avg_reward", np.mean(reward_per_state_list[-1000:]), i)
             bundle = parking_agent.agent._unwrap(parking_agent.agent.bundle)
@@ -275,7 +275,7 @@ if __name__=="__main__":
         reward_info = np.round(reward_info,2)
         reward_info_list.append(list(reward_info))
 
-        if verbose and i%10==0 and i>0:
+        if verbose and i%10==0 and i>0 and rank == 0:
             print('success rate:',np.sum(succ_record),'/',len(succ_record))
             bundle = parking_agent.agent._unwrap(parking_agent.agent.bundle)
             log_std = bundle.log_std.detach().cpu().numpy().reshape(-1)

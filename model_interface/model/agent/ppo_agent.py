@@ -711,7 +711,10 @@ class PPOAgent(AgentBase):
                 else:
                     rank = 0
                 if rank ==0:
-                    print("KL_ratio", prob_ratio)
+                    print(
+                        "KL_ratio mean:",
+                        prob_ratio.mean().item()
+                    )
                 ''''
                 # 取该样本当时存的 action_index
                     k = batches["action_index"][ri]   # 需要你在 memory 里存下来

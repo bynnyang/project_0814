@@ -215,6 +215,17 @@ class CarParking(gym.Env):
         angle_norm_ratio = math.pi
         dist_reward = prev_dist_diff/dist_norm_ratio - dist_diff/dist_norm_ratio
         angle_reward = prev_angle_diff/angle_norm_ratio - angle_diff/angle_norm_ratio
+
+        abs_dist_pen = -0.05 * (dist_diff / dist_norm_ratio)
+        abs_ang_pen  = -0.02 * (angle_diff  / angle_norm_ratio)
+
+
+        near_bonus = 0.0
+        # 你可以按场景调阈值（先保守一点）
+        if dist_diff < 10.0 and angle_diff < (60.0 * math.pi / 180.0):
+            near_bonus += 0.2
+        if dist_diff < 5.0 and angle_diff < (20.0 * math.pi / 180.0):
+            near_bonus += 0.3
         
         # Box union reward
         vehicle_box = Polygon(self.vehicle.box)
@@ -247,10 +258,10 @@ class CarParking(gym.Env):
             else:
                 # first shift is free
                 self._gear_shift_seen = True
-        return [time_cost ,rs_dist_reward ,dist_reward ,angle_reward ,box_union_reward, gear_reward]
+        return [time_cost, rs_dist_reward, dist_reward, angle_reward, box_union_reward, gear_reward,  abs_dist_pen + abs_ang_pen, near_bonus]
         
     def get_reward(self, status, prev_state):
-        reward_info = [0,0,0,0,0,0]
+        reward_info = [0,0,0,0,0,0,0,0]
         if status == Status.CONTINUE:
             reward_info = self._get_reward(prev_state, self.vehicle.state)
         return reward_info
@@ -311,7 +322,9 @@ class CarParking(gym.Env):
             'dist_reward':reward_list[2],\
             'angle_reward':reward_list[3],\
             'box_union_reward':reward_list[4],
-            'gear_shift_reward':reward_list[5]})
+            'gear_shift_reward':reward_list[5],
+            'abs_shape':reward_list[6],
+            'near_bonus':reward_list[7]})
 
         info = OrderedDict({'reward_info':reward_info,
             'path_to_dest':None})

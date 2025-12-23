@@ -17,7 +17,7 @@ source /opt/ros/noetic/setup.bash
 SCRIPT=train_HOPE_ppo.py
 
 # 使用 GPU 数量（单卡=1，多卡=4）
-NUM_GPUS=1
+NUM_GPUS=4
 
 # 指定可见 GPU（可选）
 export CUDA_VISIBLE_DEVICES=0,1,2,3
