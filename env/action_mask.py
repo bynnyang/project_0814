@@ -195,6 +195,9 @@ class ActionMask():
         backward_step_len_ = minimum_filter1d(backward_step_len, kernel)
         return np.clip(np.concatenate((forward_step_len_, backward_step_len_)), 0, self.n_iter)/self.n_iter
     
+    def atanh(self,x):
+        return 0.5 * (torch.log1p(x) - torch.log1p(-x))
+    
     
     def choose_action(self, action_mean, action_std, action_mask):
 
@@ -220,9 +223,16 @@ class ActionMask():
         # scale_speed = 1
         scale_speed = VALID_SPEED[1] 
         possible_actions = possible_actions/np.array([scale_steer, scale_speed])
-        prob = calculate_probability(action_mean, action_std, possible_actions)
-        exp_prob = np.exp(prob) * action_mask
-        prob_softmax = exp_prob / np.sum(exp_prob)
+        a = possible_actions
+        eps = 1e-6
+        a = np.clip(a, -1.0 + eps, 1.0 - eps)
+        u = self.atanh(a)
+        prob = calculate_probability(action_mean, action_std, u)
+        prob = prob - np.sum(np.log(1.0 - a**2 + 1e-6), axis=1)
+        logits = prob + np.log(action_mask + 1e-12)   # 软权重进log域
+        logits = logits - np.max(logits)              # 防止exp溢出
+        exp_logits = np.exp(logits)
+        prob_softmax = exp_logits / (np.sum(exp_logits) + 1e-12)
         actions = np.arange(len(possible_actions))
         action_chosen = np.random.choice(actions, p=prob_softmax)
         return possible_actions[action_chosen]

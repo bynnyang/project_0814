@@ -346,10 +346,12 @@ class PPOAgent(AgentBase):
             action_np = int(action.detach().item()) if torch.is_tensor(action) else int(action)
             log_prob = float(log_prob_t.detach().cpu().item())
             return action_np, log_prob
-        if False and action_mask is not None:
+        if action_mask is not None:
             mean, std = action_dist.mean, action_dist.stddev
             action = self.action_filter.choose_action(mean, std, action_mask)
             action = torch.FloatTensor(action).to(self.device)
+            action = torch.clamp(action, -0.999, 0.999)
+            u = self.atanh(action)
         else:
             u = action_dist.sample()
             action = torch.tanh(u)
