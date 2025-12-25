@@ -358,7 +358,7 @@ class PPOAgent(AgentBase):
             action = torch.tanh(u)
 
         if self.configs.dist_type == "gaussian":
-            action = torch.clamp(action, -1, 1)
+            action = torch.clamp(action, -0.999, 0.999)
         log_prob_t = action_dist.log_prob(u)
         log_prob_t = log_prob_t.sum(dim=-1)
         log_prob_t = log_prob_t - torch.log(1.0 - action.pow(2) + 1e-6).sum(dim=-1)
@@ -447,25 +447,28 @@ class PPOAgent(AgentBase):
     def atanh(self,x):
         return 0.5 * (torch.log1p(x) - torch.log1p(-x))
 
-    def get_log_prob(self, obs: np.ndarray, action: np.ndarray):
-        '''get the log probability for given action based on current policy
+    def get_log_prob(self, obs: np.ndarray, action: np.ndarray) -> float:
+        """
+        Get scalar log π(a|s) under current squashed Gaussian policy.
+        Returned value is a python float, consistent with rollout.
+        """
+        # get u-space Normal distribution
+        dist_u = self._actor_forward(obs)   # Normal(mean_u, std)
 
-        Args:
-            observation(np.ndarray): np.ndarray with the same shape of self.state_dim.
+        # a-space action -> tensor
+        action = torch.as_tensor(action, dtype=torch.float32, device=self.device)
+        action = torch.clamp(action, -0.999, 0.999)  # safety for atanh
 
-        Returns:
-            log_prob(np.ndarray): the log probability of taken action.
-        '''
-        dist = self._actor_forward(obs)
+        # a -> u
+        u = self.atanh(action)
 
-        a = torch.as_tensor(action, dtype=torch.float32, device=self.device)
-        a = torch.clamp(a, -0.999, 0.999)
-        u = self.atanh(a)
-        
-        log_prob = dist.log_prob(u).sum(dim=-1, keepdim=True)
-        log_prob -= torch.log(1.0 - a.pow(2) + 1e-6).sum(dim=-1, keepdim=True)
-        log_prob = log_prob.detach().cpu().numpy().flatten()
-        return log_prob
+        # log π(a) = log N(u) - log|detJ|
+        log_prob = dist_u.log_prob(u)
+        log_prob = log_prob.sum(dim=-1, keepdim=True)
+        log_prob = log_prob - torch.log(1.0 - action.pow(2) + 1e-6).sum(dim=-1, keepdim=True)
+
+        # return scalar
+        return float(log_prob.detach().cpu().item())
     
     '''
     连续动作空间
@@ -725,7 +728,7 @@ class PPOAgent(AgentBase):
 
                 elif self.configs.dist_type == "gaussian":
                     _, policy_dist = b.actor_net(enc_train, pt_train, traj_point_start_mb)
-                    a_mean = torch.clamp(policy_dist, -1, 1)
+                    a_mean = torch.clamp(policy_dist, -0.999, 0.999)
                     mean_u = self.atanh(a_mean)
                     log_std = b.log_std.expand_as(mean_u)
                     log_std = torch.clamp(log_std, -2.0, 0.0)
