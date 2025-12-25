@@ -51,7 +51,7 @@ N_DISCRETE_ACTION = len(discrete_actions)
 
 
 GAMMA = 0.98
-BATCH_SIZE = 2048
+BATCH_SIZE = 5
 LR = 1e-4 #LR = 5e-6
 TAU = 0.1
 MAX_TRAIN_STEP = 1e6
@@ -170,7 +170,7 @@ OBS_W = 512
 OBS_H = 512
 RENDER_TRAJ = True
 MAX_DIST_TO_DEST = 14.15
-ENV_COLLIDE = True
+ENV_COLLIDE = False
 
 
 BG_COLOR = (0, 0, 0)
@@ -205,7 +205,7 @@ HISTORY_BOX_SCALE      = 0.4  # 历史车身 box 相对正式车身缩小比例�
 TRAJ_POINT_COLOR       = (0, 160, 0)   # 深绿：轨迹中心线点
 TRAJ_BOX_COLOR         = (0, 200, 0)   # 亮绿：缩小小车 box
 
-RS_MAX_DIST = 10
+RS_MAX_DIST = 15
 TOLERANT_TIME = 200
 
 TRAJXRANGE = 10.0

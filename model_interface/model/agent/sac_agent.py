@@ -11,6 +11,7 @@ from model_interface.model.network import *
 from model_interface.model.replay_memory import ReplayMemory
 from model_interface.model.state_norm import StateNorm
 from env.action_mask import ActionMask
+from utils.config import Configuration
 
 class SACCriticAdapter(nn.Module):
     def __init__(self, configs: dict, action_dim:int=2):
@@ -61,13 +62,15 @@ class SACConfig(ConfigBase):
 
 class SACAgent(AgentBase):
     def __init__(
-        self, configs: dict, discrete: bool = False, verbose: bool = False,
+        self, config_obj: Configuration, configs: dict, discrete: bool = False, verbose: bool = False,
         save_params: bool = False, load_params: bool = False
     ) -> None:
 
         super().__init__(SACConfig, configs, verbose, save_params, load_params)
         self.discrete = discrete
         self.action_filter = ActionMask()
+        self.cfg = config_obj
+        self.cfg.device = self.device
 
         # debug
         self.actor_loss_list = []

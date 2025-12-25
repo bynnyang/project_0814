@@ -327,40 +327,46 @@ class PPOAgent(AgentBase):
                 beta = F.softplus(beta) + 1.0
                 dist = Beta(alpha, beta)
             elif self.configs.dist_type == "gaussian":
-                mean =  torch.clamp(policy_out,-1,1)  
-                log_std = b.log_std.expand_as(mean)  # To make 'log_std' have the same dimension as 'mean'
+                a_mean = torch.clamp(policy_out, -0.999, 0.999)
+                mu = self.atanh(a_mean)   
+                log_std = b.log_std.expand_as(mu)  # To make 'log_std' have the same dimension as 'mean'
                 log_std = torch.clamp(log_std, min=-2.0, max=-0.5)
                 std = torch.exp(log_std)
-                dist = Normal(mean, std)
+                dist = Normal(mu, std)
             else:
                 raise NotImplementedError
             
         return dist
     
     def _post_process_action(self, action_dist:torch.distributions.Distribution , action_mask=None): # to be replaced
+
+        if self.discrete:
+            action = action_dist.sample()  # categorical etc.
+            log_prob_t = action_dist.log_prob(action)
+            action_np = int(action.detach().item()) if torch.is_tensor(action) else int(action)
+            log_prob = float(log_prob_t.detach().cpu().item())
+            return action_np, log_prob
         if False and action_mask is not None:
             mean, std = action_dist.mean, action_dist.stddev
             action = self.action_filter.choose_action(mean, std, action_mask)
             action = torch.FloatTensor(action).to(self.device)
         else:
-            action = action_dist.sample()
+            u = action_dist.sample()
+            action = torch.tanh(u)
 
-        if not self.discrete and self.configs.dist_type == "gaussian":
-                action = torch.clamp(action, -1, 1)
-        log_prob_t = action_dist.log_prob(action)
-        if not self.discrete:
-        # make sure we sum across action dims
-        # log_prob_t might be shape (action_dim,) or (..., action_dim)
-            log_prob_t = log_prob_t.sum(dim=-1)
+        if self.configs.dist_type == "gaussian":
+            action = torch.clamp(action, -1, 1)
+        log_prob_t = action_dist.log_prob(u)
+        log_prob_t = log_prob_t.sum(dim=-1)
+        log_prob_t = log_prob_t - torch.log(1.0 - action.pow(2) + 1e-6).sum(dim=-1)
 
-        # 4) convert to numpy / python float
-        if self.discrete:
-            # if you ever use discrete, action should be int
-            action_np = int(action.detach().item()) if torch.is_tensor(action) else int(action)
+      
+        action_np = action.detach().cpu().numpy().astype(np.float32).reshape(-1)
+        log_prob_val = log_prob_t.detach().cpu()
+        if log_prob_val.numel() == 1:
+            log_prob = float(log_prob_val.item())
         else:
-            action_np = action.detach().cpu().numpy().astype(np.float32).reshape(-1)
-
-        log_prob = float(log_prob_t.detach().cpu().item())
+            log_prob = float(log_prob_val.view(-1)[0].item())
         return action_np, log_prob
 
 
@@ -433,6 +439,10 @@ class PPOAgent(AgentBase):
         action, log_prob = self._post_process_action(dist)
                 
         return action, log_prob
+    
+
+    def atanh(self,x):
+        return 0.5 * (torch.log1p(x) - torch.log1p(-x))
 
     def get_log_prob(self, obs: np.ndarray, action: np.ndarray):
         '''get the log probability for given action based on current policy
@@ -444,9 +454,14 @@ class PPOAgent(AgentBase):
             log_prob(np.ndarray): the log probability of taken action.
         '''
         dist = self._actor_forward(obs)
+
+        a = torch.as_tensor(action, dtype=torch.float32, device=self.device)
+        a = torch.clamp(a, -0.999, 0.999)
+        u = self.atanh(a)
+        log_prob = dist.log_prob(u).sum(dim=-1, keepdim=True)
         
-        action = torch.FloatTensor(action).to(self.device)
-        log_prob = dist.log_prob(action)
+        log_prob = dist.log_prob(u).sum(dim=-1, keepdim=True)
+        log_prob -= torch.log(1.0 - a.pow(2) + 1e-6).sum(dim=-1, keepdim=True)
         log_prob = log_prob.detach().cpu().numpy().flatten()
         return log_prob
     
@@ -708,13 +723,18 @@ class PPOAgent(AgentBase):
 
                 elif self.configs.dist_type == "gaussian":
                     _, policy_dist = b.actor_net(enc_train, pt_train, traj_point_start_mb)
-                    mean = torch.clamp(policy_dist, -1, 1)
-                    log_std = b.log_std.expand_as(mean)
+                    a_mean = torch.clamp(policy_dist, -1, 1)
+                    mean_u = self.atanh(a_mean)
+                    log_std = b.log_std.expand_as(mean_u)
+                    log_std = torch.clamp(log_std, -2.0, -0.5)
                     std = torch.exp(log_std)
-                    dist = Normal(mean, std)
-                    dist_entropy = dist.entropy().sum(1, keepdim=True)
-                    log_prob = dist.log_prob(action_batch[ri])
-                    log_prob =torch.sum(log_prob,dim=1, keepdim=True)
+                    dist_u = Normal(mean_u, std)
+                    dist_entropy = dist_u.entropy().sum(1, keepdim=True)
+                    a = action_batch[ri]
+                    a = torch.clamp(a, -0.999, 0.999)
+                    u = self.atanh(a)
+                    log_prob = dist_u.log_prob(u).sum(dim=1, keepdim=True)
+                    log_prob = log_prob - torch.log(1.0 - a.pow(2) + 1e-6).sum(dim=1, keepdim=True)
                     old_log_prob = old_log_prob_batch[ri]
                 prob_ratio = (log_prob - old_log_prob).exp()
                 if dist_gpu.is_available() and dist_gpu.is_initialized():

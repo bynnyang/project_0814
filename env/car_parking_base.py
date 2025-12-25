@@ -223,9 +223,9 @@ class CarParking(gym.Env):
         near_bonus = 0.0
         # 你可以按场景调阈值（先保守一点）
         if dist_diff < 10.0 and angle_diff < (60.0 * math.pi / 180.0):
-            near_bonus += 0.2
+            near_bonus += 0.02
         if dist_diff < 5.0 and angle_diff < (20.0 * math.pi / 180.0):
-            near_bonus += 0.3
+            near_bonus += 0.03
         
         # Box union reward
         vehicle_box = Polygon(self.vehicle.box)
@@ -419,7 +419,8 @@ class CarParking(gym.Env):
         '''
         startX, startY, startYaw = self.vehicle.state.loc.x, self.vehicle.state.loc.y, self.vehicle.state.heading
         goalX, goalY, goalYaw = self.map.dest.loc.x, self.map.dest.loc.y, self.map.dest.heading
-        radius = math.tan(VALID_STEER[-1])/WHEEL_BASE
+        # radius = math.tan(VALID_STEER[-1])/WHEEL_BASE
+        radius = math.tan(0.496)/WHEEL_BASE
         #  Find all possible reeds-shepp paths between current and goal node
         reedsSheppPaths = rsCurve.calc_all_paths(startX, startY, startYaw, goalX, goalY, goalYaw, radius, 0.1)
 
