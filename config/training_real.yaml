@@ -57,7 +57,7 @@ decoder_method: "transformer"
 tf_de_dim: 128
 tf_de_heads: 4
 tf_de_layers: 4
-tf_de_dropout: 0.005
+tf_de_dropout: 0.0
 
 ##################### CNN #####################
 

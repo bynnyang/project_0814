@@ -390,7 +390,7 @@ class TrajectoryDecoderONNX(nn.Module):
 
         self.pos_embed = nn.Parameter(torch.randn(1, item_cnt, self.cfg.tf_de_dim) * .02)
         # 使用 ONNX-friendly Transformer
-        tf_layer = ONNXTransformerDecoderLayer(d_model=self.cfg.tf_de_dim, n_heads=self.cfg.tf_de_heads, d_ff=512, dropout=0.05)
+        tf_layer = ONNXTransformerDecoderLayer(d_model=self.cfg.tf_de_dim, n_heads=self.cfg.tf_de_heads, d_ff=512, dropout=0.0)
         self.tf_decoder = ONNXTransformerDecoder(tf_layer, num_layers=self.cfg.tf_de_layers)
         self.output_layer = nn.Sequential(
             nn.Linear(self.cfg.tf_de_dim, 2),
