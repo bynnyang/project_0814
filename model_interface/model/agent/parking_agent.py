@@ -23,7 +23,7 @@ class RsPlanner(object):
         filtered_actions = []
         speed_scale = VALID_SPEED[1]
         for action in action_list:
-            action[0] *= 1
+            action[0] = action[0] * (0.496 / VALID_STEER[1])
             if abs(action[1])<1 and abs(action[1])>1e-3:
                 filtered_actions.append(action)
             elif action[1]>1:
@@ -53,6 +53,8 @@ class ParkingAgent(object):
     ) -> None:
         self.agent = rl_agent
         self.planner = planner
+        self._last_use_rs = None
+        self._state_start_frame = None
 
     def __getattr__(self, name: str):
         if name.startswith('_'):

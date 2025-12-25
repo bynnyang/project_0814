@@ -17,7 +17,7 @@ FRONT_HANG = 0.68  # front hang length
 REAR_HANG = 0.704  # rear hang length
 LENGTH = WHEEL_BASE+FRONT_HANG+REAR_HANG
 WIDTH = 1.781  # width
-STEP_TIME_AND_LENGHT = 0.2
+STEP_TIME_AND_LENGHT = 0.6
 
 from shapely.geometry import LinearRing
 VehicleBox = LinearRing([
@@ -29,8 +29,8 @@ VehicleBox = LinearRing([
 VALID_SPEED = [-1.2, 1.2]
 VALID_STEER = [-0.62, 0.62]
 
-NUM_STEP = 4 #这个记得改为匹配模型的0.2s  也就是NUM_STEP = 4
-STEP_LENGTH = 5e-2
+NUM_STEP = 1 #这个记得改为匹配模型的0.2s  也就是NUM_STEP = 4
+STEP_LENGTH = 0.2
 
 USE_LIDAR = True
 USE_ACTION_MASK = True
@@ -51,7 +51,7 @@ N_DISCRETE_ACTION = len(discrete_actions)
 
 
 GAMMA = 0.98
-BATCH_SIZE = 5
+BATCH_SIZE = 2048
 LR = 1e-4 #LR = 5e-6
 TAU = 0.1
 MAX_TRAIN_STEP = 1e6

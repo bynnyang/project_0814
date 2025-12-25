@@ -89,6 +89,18 @@ class LidarSimlator():
         a = np.sin(theta).reshape(-1,1) # (120, 1)
         b = -np.cos(theta).reshape(-1,1)
         c = 0
+        '''
+        在自车坐标系下，雷达表示的120个位置按照下图进行分区域，四个区域 360度
+
+        1           0
+
+         -----------
+         |          |
+         |          |
+         |          |
+         ----------
+        2            3
+        '''
 
         # convert obstacles(LinerRing) to edges ((x1,y1), (x2,y2))
         x1s, x2s, y1s, y2s = [], [], [], []

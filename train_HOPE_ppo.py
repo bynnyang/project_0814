@@ -249,9 +249,41 @@ if __name__=="__main__":
                 if (not parking_agent.distributed) or rank == 0:
                     writer.add_scalar("actor_loss", actor_loss, i)
                     writer.add_scalar("critic_loss", critic_loss, i)
+
+                
+            use_rs = info['path_to_dest'] is not None
             
-            if info['path_to_dest'] is not None:
-                parking_agent.set_planner_path(info['path_to_dest'])
+            if use_rs:
+                parking_agent.set_planner_path(info['path_to_dest'], True)
+            else:
+                parking_agent.reset()
+
+            # —— 状态切换检测 & 打印 ——
+            last = parking_agent._last_use_rs
+
+            if last is None:
+                # 第一次进入
+                print(f"{step_num}: {'use_rs_path' if use_rs else 'not_use_rs_path'} (start)")
+                parking_agent._state_start_frame = step_num
+
+            elif last != use_rs:
+                # 状态发生切换
+                duration = step_num - parking_agent._state_start_frame
+                print(
+                    f"{step_num}: "
+                    f"{'use_rs_path' if last else 'not_use_rs_path'} "
+                    f"lasted {duration} frames"
+                )
+
+                print(
+                    f"{step_num}: "
+                    f"{'use_rs_path' if use_rs else 'not_use_rs_path'} (start)"
+                )
+
+                parking_agent._state_start_frame = step_num
+
+            # 更新状态
+            parking_agent._last_use_rs = use_rs
 
             if done:
                 if info['status']==Status.ARRIVED:

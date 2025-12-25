@@ -460,7 +460,6 @@ class PPOAgent(AgentBase):
         a = torch.as_tensor(action, dtype=torch.float32, device=self.device)
         a = torch.clamp(a, -0.999, 0.999)
         u = self.atanh(a)
-        log_prob = dist.log_prob(u).sum(dim=-1, keepdim=True)
         
         log_prob = dist.log_prob(u).sum(dim=-1, keepdim=True)
         log_prob -= torch.log(1.0 - a.pow(2) + 1e-6).sum(dim=-1, keepdim=True)
