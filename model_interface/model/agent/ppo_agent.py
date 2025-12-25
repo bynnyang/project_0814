@@ -34,7 +34,8 @@ class ActorCriticBundle(nn.Module):
 
         # gaussian policy learnable log_std
         self.log_std = nn.Parameter(
-            torch.full((1, configs.action_dim), -1.0, device=device), requires_grad=True
+            torch.tensor([[-0.5, 0.0]], device=device),
+            requires_grad=True
         )
 
     def encode_obs(self, obs_dict):
@@ -330,7 +331,7 @@ class PPOAgent(AgentBase):
                 a_mean = torch.clamp(policy_out, -0.999, 0.999)
                 mu = self.atanh(a_mean)   
                 log_std = b.log_std.expand_as(mu)  # To make 'log_std' have the same dimension as 'mean'
-                log_std = torch.clamp(log_std, min=-2.0, max=-0.5)
+                log_std = torch.clamp(log_std, min=-2.0, max=0.0)
                 std = torch.exp(log_std)
                 dist = Normal(mu, std)
             else:
@@ -727,7 +728,7 @@ class PPOAgent(AgentBase):
                     a_mean = torch.clamp(policy_dist, -1, 1)
                     mean_u = self.atanh(a_mean)
                     log_std = b.log_std.expand_as(mean_u)
-                    log_std = torch.clamp(log_std, -2.0, -0.5)
+                    log_std = torch.clamp(log_std, -2.0, 0.0)
                     std = torch.exp(log_std)
                     dist_u = Normal(mean_u, std)
                     dist_entropy = dist_u.entropy().sum(1, keepdim=True)
