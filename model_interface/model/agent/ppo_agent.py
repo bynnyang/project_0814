@@ -21,6 +21,62 @@ import torch.distributed as dist_gpu
 from torch.nn.parallel import DistributedDataParallel as DDP
 import os
 
+class ActorWithSpeedDelta(nn.Module):
+    """
+    Wrap a pretrained TrajectoryDecoderONNX and add a small residual head
+    to adjust ONLY the speed dimension (action[:,1]).
+    """
+    def __init__(self, base_actor: nn.Module, hidden_dim: int, alpha: float = 0.3):
+        super().__init__()
+        self.base_actor = base_actor
+        self.alpha = alpha
+
+        # 小 MLP：输入是 decoder 的 feature（tf_de_dim），输出 Δspeed（标量）
+        # hidden_dim 建议用 cfg.tf_de_dim 或者 cfg.tf_de_dim//2
+        self.speed_delta_head = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.Tanh(),
+            nn.Linear(hidden_dim, 1),
+            nn.Tanh(),  # 保证 Δspeed ∈ [-1, 1]
+        )
+
+    def forward(self, encoder_out, point_out, tgt, global_step=None):
+        # 1) 先走原始 pretrained actor，拿到 mean_pre（tanh 后的动作域）
+        pred_actions, first_action, first_logtis = self.base_actor(encoder_out, point_out, tgt, global_step=global_step)
+        # pred_actions: [B, T, 2]  (tanh 输出)
+        # first_action: [B, 2]    (t=1 的动作)
+
+        # 2) 我们需要一个“特征 h”来算 Δspeed
+        #    最小侵入做法：用 base_actor 的最后一层输入 feature（last_step_pred_action_logti）
+        #
+        #    但你现在的 TrajectoryDecoderONNX forward 没有把这个 feature 返回出来。
+        #    所以这里提供两种做法：
+        #
+        #    A.（推荐）轻改 TrajectoryDecoderONNX：额外 return 一个 feature（见下方“最小改动”）
+        #    B.（不改 base_actor）用 point_out 或 encoder_out 做 Δspeed（效果通常略差）
+        #
+        # 这里先用 B：用 point_out 作为特征（你 target_point_encoder 输出的 global_context）
+        h = first_logtis  # [B, D]，D=cfg.global_graph_width（如果不是，改成合适维度）
+
+        # 如果 h 维度 != hidden_dim，需要加一个投影层；为简单起见，这里动态加（也可以在 __init__ 固定）
+        if h.size(-1) != self.speed_delta_head[0].in_features:
+            raise RuntimeError(
+                f"point_out dim {h.size(-1)} != speed_delta_head expected {self.speed_delta_head[0].in_features}. "
+                f"Either set hidden_dim=point_out_dim, or add a projector."
+            )
+
+        delta_speed = self.speed_delta_head(h)  # [B,1] in [-1,1]
+        # delta_speed = delta_speed.unsqueeze(1)  # [B,1,1] for broadcasting over T
+
+        # first_action 同样修正（保持你原返回接口一致）
+        first_action = first_action.clone()
+        first_action[..., 1] = torch.clamp(
+            first_action[..., 1] + self.alpha * delta_speed[:, 0],
+            min=-0.999, max=0.999
+        )
+
+        return pred_actions, first_action
+
 class ActorCriticBundle(nn.Module):
     def __init__(self, cfg, configs, device):
         super().__init__()
@@ -29,12 +85,17 @@ class ActorCriticBundle(nn.Module):
 
         self.multi_encoder = MultiObsEmbedding(configs.actor_layers)
         self.target_point_encoder = TrajInputEmbedding(cfg.global_graph_width)
-        self.actor_net = TrajectoryDecoderONNX(cfg)
+        base_actor = TrajectoryDecoderONNX(cfg)
+        self.actor_net = ActorWithSpeedDelta(
+            base_actor=base_actor,
+            hidden_dim=cfg.global_graph_width,
+            alpha=0.3,          # 可调：0.1~0.5
+        )
         self.critic_net = CriticNetwork(configs.actor_layers["embed_size"])
 
         # gaussian policy learnable log_std
         self.log_std = nn.Parameter(
-            torch.tensor([[-0.5, 0.0]], device=device),
+            torch.tensor([[-0.5, -0.1]], device=device),
             requires_grad=True
         )
 
@@ -380,6 +441,25 @@ class PPOAgent(AgentBase):
         action, other_info = self._post_process_action(dist, action_mask)
                 
         return action, other_info
+    
+    def choose_action_eval(self, obs):
+        observation = deepcopy(obs)
+        if self.configs.state_norm:
+            observation = self.state_normalize.state_norm(observation)
+        observation = self.obs2tensor(observation)
+        b = self._unwrap(self.bundle)
+        b.multi_encoder.eval()
+        b.target_point_encoder.eval()
+        b.actor_net.eval()
+            
+        with torch.no_grad():
+            traj_point_start = self.gt_traj_point.to(self.device).unsqueeze(1)
+            encoder_out, point_out = b.encode_obs(observation)
+            _, policy_out = b.actor_net(encoder_out, point_out, traj_point_start)
+            a_mean = torch.clamp(policy_out, -0.999, 0.999)
+            a_mean = a_mean.detach().cpu().numpy().astype(np.float32).reshape(-1)
+            
+        return a_mean, None
     
     # def _post_process_action(self, action_dist, action_mask=None):
     #     if action_mask is not None:

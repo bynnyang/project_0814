@@ -97,6 +97,25 @@ class ParkingAgent(object):
             log_prob = self.agent.get_log_prob(obs, action)
             return action, log_prob
         
+    def choose_action_eval(self, obs):
+        '''
+        Get the fused decision from the planner and the agent.
+        The action is clipped to the range of the safe action space using action mask.
+
+        Params:
+            obs(dict): the observation of the environment
+
+        Return:
+            action(np.array): the fused decision
+            other: the other information, such as the log_prob of the action in case of PPO
+        '''
+        if not self.executing_rs:
+            return self.agent.choose_action_eval(obs)
+        else:
+            action = self.planner.get_action()
+            log_prob = self.agent.get_log_prob(obs, action)
+            return action, log_prob
+        
     def get_action(self, obs):
         '''
         Get the fused decision from the planner and the agent.

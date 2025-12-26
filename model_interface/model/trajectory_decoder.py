@@ -504,6 +504,7 @@ class TrajectoryDecoderONNX(nn.Module):
         output_sequence = torch.zeros(batch_size, max_possible_len, feat_dim).to(self.cfg.device)
         output_sequence[:, 0,:] = tgt[:, 0, :]
         pred_actions_list = []
+        step_pred_action_logti_list = []
 
         for t in range(1, self.cfg.autoregressive_points - 1):
             # 创建当前输入序列
@@ -523,6 +524,7 @@ class TrajectoryDecoderONNX(nn.Module):
             
             # 获取最后一步的预测
             last_step_pred_action_logti = pred_actions_logtis[:, -1, :]
+            step_pred_action_logti_list.append(last_step_pred_action_logti)
             last_step_pred_action = self.output_layer(last_step_pred_action_logti)
             pred_actions_list.append(last_step_pred_action)
             
@@ -544,12 +546,13 @@ class TrajectoryDecoderONNX(nn.Module):
 
         tgt_embedding = self.traj_embedding(output_seq_detached)
         tgt_embedding = tgt_embedding + final_global_context
-        tgt_embedding = self.pos_drop(tgt_embedding + self.pos_embed[:, :self.cfg.autoregressive_points, :])
+        tgt_embedding = self.pos_drop(tgt_embedding + self.pos_embed[:, :(self.cfg.autoregressive_points-1), :])
 
         pred_actions_logtis = self.decoder(encoder_out, tgt_embedding, tgt_mask)
         pred_actions = self.output_layer(pred_actions_logtis)
-        pred_actions_list.append(pred_actions)
-        return pred_actions, pred_actions_list[0]
+        pred_actions_list.append(pred_actions[:,-1,:])
+        return pred_actions, pred_actions_list[0], step_pred_action_logti_list[0]
+        # return pred_actions, pred_actions_list[0]
     
 
     def predict(self, encoder_out, point_out, tgt):

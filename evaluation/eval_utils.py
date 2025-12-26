@@ -40,7 +40,7 @@ def eval(env, agent, episode=2000, log_path='', multi_level=False, post_proc_act
         while not done:
             step_num += 1
             if post_proc_action:
-                action, _ = agent.choose_action(obs)
+                action, _ = agent.choose_action_eval(obs)
             else:
                 action, _ = agent.get_action(obs)
             if (last_obs == obs['target']).all():
@@ -52,8 +52,10 @@ def eval(env, agent, episode=2000, log_path='', multi_level=False, post_proc_act
             path_length += np.linalg.norm(np.array(last_xy)-np.array((env.vehicle.state.loc.x, env.vehicle.state.loc.y)))
             last_xy = (env.vehicle.state.loc.x, env.vehicle.state.loc.y)
             
-            if info['path_to_dest'] is not None:
-                agent.set_planner_path(info['path_to_dest'])
+            # if info['path_to_dest'] is not None:
+            #     agent.set_planner_path(info['path_to_dest'])
+            # else:
+            #     agent.reset()
             if done:
                 if info['status']==Status.ARRIVED:
                     succ_record.append(1)
