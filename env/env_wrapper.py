@@ -5,7 +5,7 @@ from gym import Wrapper
 
 from env.car_parking_base import CarParking
 from env.vehicle import Status
-from vehicle_config import REWARD_WEIGHT, REWARD_RATIO
+from vehicle_config import REWARD_WEIGHT, REWARD_RATIO, OUTBOUND_REWARD, OUTTIME_REWARD, ARRIVED_REWARD, COLLIDED_REWARD
 
 def reward_shaping(*args):
     '''
@@ -20,13 +20,13 @@ def reward_shaping(*args):
         for reward_type in REWARD_WEIGHT.keys():
             reward += REWARD_WEIGHT[reward_type]*reward_info[reward_type]
     elif status == Status.OUTBOUND:
-        reward = -20
+        reward = OUTBOUND_REWARD
     elif status == Status.OUTTIME:
-        reward = -1
+        reward = OUTTIME_REWARD
     elif status == Status.ARRIVED:
-        reward = 20
+        reward = ARRIVED_REWARD
     elif status == Status.COLLIDED:
-        reward = -20
+        reward = COLLIDED_REWARD
     else:
         print(status)
         print('Never reach here !!!')

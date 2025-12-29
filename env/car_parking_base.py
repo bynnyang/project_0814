@@ -144,6 +144,10 @@ class CarParking(gym.Env):
         self.prev_reward = 0.0
         self.accum_arrive_reward = 0.0
         self.t = 0.0
+        self._gear_shift_seen = False
+        self._risk_prev_d = None
+        self._risk_in_zone = None
+        self._stuck_steps = 0
 
         if level is not None:
             self.set_level(level)
@@ -167,7 +171,7 @@ class CarParking(gym.Env):
         vehicle_box = Polygon(self.vehicle.box)
         dest_box = Polygon(self.map.dest_box)
         union_area = vehicle_box.intersection(dest_box).area
-        if union_area / dest_box.area > 0.95:
+        if union_area / dest_box.area > 0.90:
             return True
         return False
     
@@ -185,7 +189,7 @@ class CarParking(gym.Env):
             return Status.OUTTIME
         return Status.CONTINUE
 
-    def _get_reward(self, prev_state: State, curr_state: State):
+    def _get_reward(self, prev_state: State, curr_state: State, lidar_dist: List):
 
         # time penalty
         time_cost = - np.tanh(self.t / (10*TOLERANT_TIME))
@@ -258,12 +262,183 @@ class CarParking(gym.Env):
             else:
                 # first shift is free
                 self._gear_shift_seen = True
-        return [time_cost, rs_dist_reward, dist_reward, angle_reward, box_union_reward, gear_reward,  abs_dist_pen + abs_ang_pen, near_bonus]
+        # low_speed = 0.0
+        # if abs(curr_state.speed) < 0.3:
+        #     low_speed = -0.2
+        '''
+        增加靠近障碍物的惩罚和远离障碍物的奖励
+        1、首先是没有进入车位， 没有发生面积的overlap， union_area = vehicle_box.intersection(dest_box).area = 0
+        2、当D档时，判断前方距离小于0.5时，开始惩罚，且越靠近越惩罚；
+           R档时，判断后方距离小于0.5时，开始惩罚，且越靠近越惩罚
+           进入惩罚后，如果下一步会远离前方障碍物，或者后方障碍物，则可以获得奖励，奖励为定值
+           前向距离信号为min_front_distance，后向距离信号为min_rear_distance
+
+        '''
+         # ==============================
+        # Encourage gear shift near wall (optional, set to 0 to disable)
+        # ==============================
+        SHIFT_GEAR_BONUS = 0.10  # set 0 to disable
+
+        front_distance = np.concatenate([lidar_dist[0:5], lidar_dist[114:120]])
+        rear_distance = np.array(lidar_dist[42:77])
+        # distance signals (m)
+        min_front_distance = float(front_distance.min())
+        min_rear_distance  = float(rear_distance.min())
+
+        effective_gear = curr_gear if curr_gear != 0 else prev_gear
+        if effective_gear == 1:
+            danger_d = min_front_distance
+        elif effective_gear == -1:
+            danger_d = min_rear_distance
+        else:
+            danger_d = None
+
+        in_shift_zone = (danger_d is not None and danger_d < 0.5)
+
+        # shift event
+        shifted = (prev_gear != 0 and curr_gear != 0 and prev_gear != curr_gear)
+
+        if in_shift_zone and shifted:
+            # cancel any shift penalty and optionally add bonus
+            gear_reward = 0.0
+            gear_reward += SHIFT_GEAR_BONUS
+
+
+        # ==============================
+        # Risk reward (obstacle distance shaping)
+        # includes:
+        #   1) barrier penalty (closer -> much larger penalty)
+        #   2) away bonus (if moving away when already in risk zone)
+        #   3) approach penalty (if moving closer when already in risk zone)
+        # ==============================
+        risk_reward = 0.0
+
+        # ---- thresholds you asked ----
+        SHIFT_START = 0.3   # you want start shifting around 0.3m
+        RISK_START  = 0.5   # mild risk starts here
+        eps = 0.05          # anti-div0 / smooth
+
+        # ---- strengths (set to 0 to disable) ----
+        # state-based barrier penalties
+        K_MILD   = 0.08     # mild barrier in (0.5m ~ 0m)
+        K_STRONG = 0.25     # extra strong barrier inside 0.3m
+
+        # trend bonus/penalty (set to 0 to disable)
+        AWAY_BONUS     = 0.05   # +reward if distance increases while in risk zone
+        AWAY_EPS       = 0.02   # require at least +2cm to count as moving away
+        APPROACH_PEN_K = 0.08   # -penalty if distance decreases while in risk zone
+        APPROACH_EPS   = 0.01   # require at least -1cm to count as moving closer
+
+        # Optional: extra "pushing closer" penalty inside SHIFT_START (set to 0 to disable)
+        K_PUSH   = 0.20
+        PUSH_EPS = 0.01
+
+        # effective gear: avoid risk disabled when speed ~ 0
+        effective_gear = curr_gear if curr_gear != 0 else prev_gear
+
+        # Only before entering slot (no overlap)
+        if union_area <= 1e-9:
+
+            # select risk distance direction
+            if effective_gear == 1:      # D -> front
+                d = min_front_distance
+            elif effective_gear == -1:   # R -> rear
+                d = min_rear_distance
+            else:
+                d = None
+
+            # init memory
+            if not hasattr(self, "_risk_prev_d"):
+                self._risk_prev_d = None
+            if not hasattr(self, "_risk_in_zone"):
+                self._risk_in_zone = False
+
+            if d is not None and d >= 0.0:
+                prev_d = self._risk_prev_d
+                in_zone_now = (d < RISK_START)
+
+                # 1) state-based barrier penalties (only in risk zone)
+                if in_zone_now:
+                    # mild barrier
+                    term_m = (1.0/(d + eps) - 1.0/(RISK_START + eps))
+                    risk_reward += -K_MILD * (term_m ** 2)
+
+                    # strong barrier inside 0.3m
+                    if d < SHIFT_START:
+                        term_s = (1.0/(d + eps) - 1.0/(SHIFT_START + eps))
+                        risk_reward += -K_STRONG * (term_s ** 2)
+
+                # 2) trend bonus/penalty (only when we were already in zone)
+                if self._risk_in_zone and (prev_d is not None) and in_zone_now:
+                    # away bonus
+                    if d > prev_d + AWAY_EPS:
+                        risk_reward += AWAY_BONUS
+
+                    # approach penalty
+                    if d < prev_d - APPROACH_EPS:
+                        approach_delta = min(prev_d - d, 0.20)  # cap 20cm
+                        approach_ratio = max(0.0, min(1.0, approach_delta / RISK_START))
+                        risk_reward += -APPROACH_PEN_K * approach_ratio
+
+                # 3) extra push penalty only inside 0.3m (optional)
+                if self._risk_in_zone and (prev_d is not None) and (d < SHIFT_START):
+                    if d < prev_d - PUSH_EPS:
+                        push_delta = min(prev_d - d, 0.10)  # cap 10cm
+                        push_ratio = max(0.0, min(1.0, push_delta / SHIFT_START))
+                        risk_reward += -K_PUSH * push_ratio
+
+                # update memory
+                self._risk_prev_d = d
+                self._risk_in_zone = in_zone_now
+
+        else:
+            # reset when entered slot
+            if hasattr(self, "_risk_prev_d"):
+                self._risk_prev_d = None
+            if hasattr(self, "_risk_in_zone"):
+                self._risk_in_zone = False
         
-    def get_reward(self, status, prev_state):
-        reward_info = [0,0,0,0,0,0,0,0]
+        # ==============================
+        # Stuck penalty: punish "no movement / no progress" loops
+        # ==============================
+        stuck_pen = 0.0
+
+        # thresholds (tune)
+        MIN_MOVE = 0.05             # 2cm per step considered "moved"
+        MIN_YAW  = 1.0 * math.pi/180.0  # 1 deg considered "turned"
+        STUCK_START = 3             # allow a few steps for fine control
+        STUCK_K = 0.05              # penalty per extra stuck step (set 0 to disable)
+
+        # compute movement
+        delta_pos = curr_state.loc.distance(prev_state.loc)
+        delta_yaw = abs(get_angle_diff(curr_state.heading, prev_state.heading))
+
+        # also consider progress to goal (optional, helps)
+        progress = prev_dist_diff - dist_diff  # >0 means closer to goal
+
+        if not hasattr(self, "_stuck_steps"):
+            self._stuck_steps = 0
+
+        # define "no effective change"
+        # no_change = (delta_pos < MIN_MOVE) and (delta_yaw < MIN_YAW) and (progress < 0.01)
+        no_change = delta_pos < MIN_MOVE
+
+        if no_change:
+            self._stuck_steps += 1
+        else:
+            self._stuck_steps = 0
+
+        if self._stuck_steps >= STUCK_START:
+            # linearly increasing penalty to strongly break loops
+            stuck_pen = -STUCK_K * (self._stuck_steps - STUCK_START + 1)
+
+        return [time_cost, rs_dist_reward, dist_reward, angle_reward, box_union_reward, gear_reward,  abs_dist_pen + abs_ang_pen, near_bonus, stuck_pen, risk_reward]
+        
+    def get_reward(self, status, prev_state, observation):
+        reward_info = [0,0,0,0,0,0,0,0,0,0]
+        lidar_dist = observation['lidar'] * LIDARRANGE
         if status == Status.CONTINUE:
-            reward_info = self._get_reward(prev_state, self.vehicle.state)
+            reward_info = self._get_reward(prev_state, self.vehicle.state, lidar_dist)
         return reward_info
 
     def step(self, action:np.ndarray = None):
@@ -316,7 +491,7 @@ class CarParking(gym.Env):
         else:
             status = Status.COLLIDED if collide else self._check_status()
 
-        reward_list = self.get_reward(status, prev_state)
+        reward_list = self.get_reward(status, prev_state, observation)
         reward_info = OrderedDict({'time_cost':reward_list[0],\
             'rs_dist_reward':reward_list[1],\
             'dist_reward':reward_list[2],\
@@ -324,7 +499,9 @@ class CarParking(gym.Env):
             'box_union_reward':reward_list[4],
             'gear_shift_reward':reward_list[5],
             'abs_shape':reward_list[6],
-            'near_bonus':reward_list[7]})
+            'near_bonus':reward_list[7],
+            'low_speed':reward_list[8],
+            'risk_reward':reward_list[9]})
 
         info = OrderedDict({'reward_info':reward_info,
             'path_to_dest':None})

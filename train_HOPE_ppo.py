@@ -131,7 +131,7 @@ if __name__=="__main__":
     parser.add_argument('--agent_ckpt', type=str, default=None) # './model/ckpt/PPO.pt'
     parser.add_argument('--img_ckpt', type=str, default='./model/ckpt/autoencoder.pt')
     parser.add_argument('--train_episode', type=int, default=100000)
-    parser.add_argument('--eval_episode', type=int, default=100)
+    parser.add_argument('--eval_episode', type=int, default=10)
     parser.add_argument('--verbose', type=bool, default=True)
     parser.add_argument('--visualize', type=bool, default=True)
     parser.add_argument('--config', default='./config/training_real.yaml', type=str)
@@ -315,12 +315,13 @@ if __name__=="__main__":
 
         if verbose and i%10==0 and i>0 and rank == 0:
             print('success rate:',np.sum(succ_record),'/',len(succ_record))
+            print('success rate ratio: {:.6f}'.format(np.sum(succ_record) / len(succ_record)))
             bundle = parking_agent.agent._unwrap(parking_agent.agent.bundle)
             log_std = bundle.log_std.detach().cpu().numpy().reshape(-1)
             print(log_std)
             print("episode:%s  average reward:%s"%(i,np.mean(reward_list[-50:])))
             print(np.mean(parking_agent.actor_loss_list[-100:]),np.mean(parking_agent.critic_loss_list[-100:]))
-            print('time_cost ,rs_dist_reward ,dist_reward ,angle_reward ,box_union_reward ,gear_shift_reward ,abs_shape ,near_bonus')
+            print('time_cost ,rs_dist_reward ,dist_reward ,angle_reward ,box_union_reward ,gear_shift_reward ,abs_shape ,near_bonus, low_speed, risk_reward')
             for j in range(10):
                 print(case_id_list[-(10-j)],reward_list[-(10-j)],reward_info_list[-(10-j)])
             print("")
@@ -364,17 +365,17 @@ if __name__=="__main__":
             f.savefig('%s/reward.png'%save_path)
             f.clear()
 
-        if (i+1) % 1000 == 0 and rank ==0:
+        if (i+1) % 5000 == 0 and rank ==0:
             # evaluation
             eval_episode = args.eval_episode
             choose_action = True
             with torch.no_grad():
                 # eval on dlp
-                env.set_level('dlp')
-                log_path = save_path+'/dlp'
-                if not os.path.exists(log_path):
-                    os.makedirs(log_path)
-                eval(env, parking_agent, episode=eval_episode, log_path=log_path, post_proc_action=choose_action)
+                # env.set_level('dlp')
+                # log_path = save_path+'/dlp'
+                # if not os.path.exists(log_path):
+                #     os.makedirs(log_path)
+                # eval(env, parking_agent, episode=eval_episode, log_path=log_path, post_proc_action=choose_action)
                 
                 # eval on extreme
                 env.set_level('Extrem')
@@ -383,18 +384,18 @@ if __name__=="__main__":
                     os.makedirs(log_path)
                 eval(env, parking_agent, episode=eval_episode, log_path=log_path, post_proc_action=choose_action)
                 
-                # eval on complex
-                env.set_level('Complex')
-                log_path = save_path+'/complex'
-                if not os.path.exists(log_path):
-                    os.makedirs(log_path)
-                eval(env, parking_agent, episode=eval_episode, log_path=log_path, post_proc_action=choose_action)
+                # # eval on complex
+                # env.set_level('Complex')
+                # log_path = save_path+'/complex'
+                # if not os.path.exists(log_path):
+                #     os.makedirs(log_path)
+                # eval(env, parking_agent, episode=eval_episode, log_path=log_path, post_proc_action=choose_action)
                 
                 # eval on normalize
-                env.set_level('Normal')
-                log_path = save_path+'/normalize'
-                if not os.path.exists(log_path):
-                    os.makedirs(log_path)
-                eval(env, parking_agent, episode=eval_episode, log_path=log_path, post_proc_action=choose_action)
+                # env.set_level('Normal')
+                # log_path = save_path+'/normalize'
+                # if not os.path.exists(log_path):
+                #     os.makedirs(log_path)
+                # eval(env, parking_agent, episode=eval_episode, log_path=log_path, post_proc_action=choose_action)
 
     env.close()

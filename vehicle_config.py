@@ -51,7 +51,7 @@ N_DISCRETE_ACTION = len(discrete_actions)
 
 
 GAMMA = 0.98
-BATCH_SIZE = 2048
+BATCH_SIZE = 5
 LR = 1e-4 #LR = 5e-6
 TAU = 0.1
 MAX_TRAIN_STEP = 1e6
@@ -119,7 +119,14 @@ REWARD_WEIGHT = OrderedDict({'time_cost':1,\
             'box_union_reward':6,
             'gear_shift_reward':8.0,
             'abs_shape':1.0,
-            'near_bonus':1.0,})
+            'near_bonus':1.0,
+            'low_speed':8.0,
+            'risk_reward':8.0})
+
+OUTBOUND_REWARD = -20
+OUTTIME_REWARD = -1
+ARRIVED_REWARD = 20
+COLLIDED_REWARD = -20
 
 
 FPS = 100
