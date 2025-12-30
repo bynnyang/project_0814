@@ -13,13 +13,14 @@ from model_interface.model.state_norm import StateNorm
 from env.action_mask import ActionMask
 from typing import Optional
 from model_interface.model.parking_model_real import TrajInputEmbedding
-from model_interface.model.trajectory_decoder import TrajectoryDecoderONNX
+from model_interface.model.trajectory_decoder import TrajectoryDecoderONNX, TrajectoryValueDecoderONNX
 import itertools
 from utils.config import Configuration
 from vehicle_config import *
 import torch.distributed as dist_gpu
 from torch.nn.parallel import DistributedDataParallel as DDP
 import os
+from torch.nn.utils.rnn import pad_sequence
 
 class ActorWithSpeedDelta(nn.Module):
     """
@@ -83,15 +84,15 @@ class ActorCriticBundle(nn.Module):
         self.cfg = cfg
         self.configs = configs
 
-        self.multi_encoder = MultiObsEmbedding(configs.actor_layers)
-        self.target_point_encoder = TrajInputEmbedding(cfg.global_graph_width)
-        base_actor = TrajectoryDecoderONNX(cfg)
-        self.actor_net = ActorWithSpeedDelta(
-            base_actor=base_actor,
-            hidden_dim=cfg.global_graph_width,
-            alpha=0.3,          # 可调：0.1~0.5
-        )
-        self.critic_net = CriticNetwork(configs.actor_layers["embed_size"])
+       # ---------- actor side ----------
+        self.actor_encoder = MultiObsEmbedding(configs.actor_layers)
+        self.actor_point_encoder = TrajInputEmbedding(cfg.global_graph_width)
+        self.actor_net = TrajectoryDecoderONNX(cfg)
+
+        # ---------- critic side ----------
+        self.critic_encoder = MultiObsEmbedding(configs.actor_layers)
+        self.critic_point_encoder = TrajInputEmbedding(cfg.global_graph_width)
+        self.critic_net = TrajectoryValueDecoderONNX(cfg)   # 1-dim value
 
         # gaussian policy learnable log_std
         self.log_std = nn.Parameter(
@@ -99,9 +100,14 @@ class ActorCriticBundle(nn.Module):
             requires_grad=True
         )
 
-    def encode_obs(self, obs_dict):
-        enc = self.multi_encoder(obs_dict)
-        pt = self.target_point_encoder(obs_dict["park_target_point"])
+    def encode_actor_obs(self, obs_dict):
+        enc = self.actor_encoder(obs_dict)
+        pt = self.actor_point_encoder(obs_dict["park_target_point"])
+        return enc, pt
+
+    def encode_critic_obs(self, obs_dict):
+        enc = self.critic_encoder(obs_dict)
+        pt = self.critic_point_encoder(obs_dict["park_target_point"])
         return enc, pt
 
 def _extract_sub_state_dict(state_dict, prefix: str):
@@ -119,7 +125,7 @@ class PPOConfig(ConfigBase):
         self.lr_actor = self.lr
         self.lr_critic = self.lr*5
         self.lr_backbone = 2e-5
-        self.lr_log_std = 1e-3
+        self.lr_log_std = 5e-5
         self.adam_epsilon = 1e-8
         self.dist_type = "gaussian"
         self.hidden_size = 256
@@ -264,7 +270,7 @@ class PPOAgent(AgentBase):
 
         # As a on-policy RL algorithm, PPO does not have memory, the self.memory represents
         # the buffer
-        self.memory = ReplayMemory(self.configs.batch_size, ["log_prob","next_obs"])
+        self.memory = ReplayMemory(self.configs.batch_size, ["log_prob","next_obs","predict_pose_list"])
 
         # tricks
         if self.configs.state_norm:
@@ -292,38 +298,50 @@ class PPOAgent(AgentBase):
 
         # 1) multi_encoder
         me_sd = _extract_sub_state_dict(state_dict, "multi_encoder.")
-        missing, unexpected = b.multi_encoder.load_state_dict(me_sd, strict=strict)
-        print(f"[load] multi_encoder: loaded={len(me_sd)}, missing={len(missing)}, unexpected={len(unexpected)}")
-
-        # 2) target_point_encoder
         tp_sd = _extract_sub_state_dict(state_dict, "target_point_encoder.")
-        missing, unexpected = b.target_point_encoder.load_state_dict(tp_sd, strict=strict)
-        print(f"[load] target_point_encoder: loaded={len(tp_sd)}, missing={len(missing)}, unexpected={len(unexpected)}")
-
-        # 3) actor / trajectory decoder
         dec_sd = _extract_sub_state_dict(state_dict, "trajectory_decoder.")
+
+        missing, unexpected = b.actor_encoder.load_state_dict(me_sd, strict=strict)
+        print(f"[load] actor_encoder: loaded={len(me_sd)}, missing={len(missing)}, unexpected={len(unexpected)}")
+        # 2) target_point_encoder
+        missing, unexpected = b.actor_point_encoder.load_state_dict(tp_sd, strict=strict)
+        print(f"[load] actor_point_encoder: loaded={len(tp_sd)}, missing={len(missing)}, unexpected={len(unexpected)}")
+        # 3) actor / trajectory decoder
         missing, unexpected = b.actor_net.load_state_dict(dec_sd, strict=strict)
         print(f"[load] actor_net(trajectory_decoder): loaded={len(dec_sd)}, missing={len(missing)}, unexpected={len(unexpected)}")
 
+        missing, unexpected = b.critic_encoder.load_state_dict(me_sd, strict=strict)
+        print(f"[load] critic_encoder: loaded={len(me_sd)}, missing={len(missing)}, unexpected={len(unexpected)}")
+       
+        missing, unexpected = b.critic_point_encoder.load_state_dict(tp_sd, strict=strict)
+        print(f"[load] critic_point_encoder: loaded={len(tp_sd)}, missing={len(missing)}, unexpected={len(unexpected)}")
+     
+        dec_sd = {k: v for k, v in dec_sd.items() if not k.startswith("output_layer.")}
+        missing, unexpected = b.critic_net.load_state_dict(dec_sd, strict=False)
+        print(f"[load] critic_net(trajectory_decoder): loaded={len(dec_sd)}, missing={len(missing)}, unexpected={len(unexpected)}")
+
     def freeze_multi_encoder_embed_img(self):
         b = self._unwrap(self.bundle)
-        if hasattr(b.multi_encoder, "embed_img"):
-            # 1. 关闭梯度
-            for p in b.multi_encoder.embed_img.parameters():
-                p.requires_grad = False
-
-            # 2. 固定 BN / Dropout 行为（如果 ConvBlock 里有）
-            b.multi_encoder.embed_img.eval()
-
-            print("[freeze] multi_encoder.embed_img frozen.")
-
+        for enc in [b.actor_encoder, b.critic_encoder]:
+            if hasattr(enc, "embed_img"):
+                for p in enc.embed_img.parameters():
+                    p.requires_grad = False
+                enc.embed_img.eval()
+        print("[freeze] actor/critic embed_img frozen.")
     def build_optimizer(self):
         b = self._unwrap(self.bundle)
         param_groups = [
-            {"params": [p for p in b.multi_encoder.parameters() if p.requires_grad], "lr": self.configs.lr_backbone},
-            {"params": [p for p in b.target_point_encoder.parameters() if p.requires_grad], "lr": self.configs.lr_actor},
+            # actor backbone
+            {"params": [p for p in b.actor_encoder.parameters() if p.requires_grad], "lr": self.configs.lr_backbone},
+            {"params": [p for p in b.actor_point_encoder.parameters() if p.requires_grad], "lr": self.configs.lr_actor},
             {"params": [p for p in b.actor_net.parameters() if p.requires_grad], "lr": self.configs.lr_actor},
+
+            # actor log_std
             {"params": [b.log_std], "lr": self.configs.lr_log_std},
+
+            # critic backbone（独立）
+            {"params": [p for p in b.critic_encoder.parameters() if p.requires_grad], "lr": self.configs.lr_backbone},
+            {"params": [p for p in b.critic_point_encoder.parameters() if p.requires_grad], "lr": self.configs.lr_critic},
             {"params": [p for p in b.critic_net.parameters() if p.requires_grad], "lr": self.configs.lr_critic},
         ]
         self.actor_critic_optimizer = torch.optim.Adam(param_groups, eps=self.configs.adam_epsilon)
@@ -350,10 +368,6 @@ class PPOAgent(AgentBase):
                 find_unused_parameters=False,  # 如果你确定所有参数都会参与反传
             )
 
-        # 4) critic_target（target 网络一般不做 DDP，保持在本 rank 即可；同步靠 soft_update）
-        #    注意：如果你希望所有 rank 的 target 严格一致，那 soft_update 前后都一致即可（DDP 保证 online 一致）
-        self.critic_target = deepcopy(self._unwrap(self.bundle).critic_net).to(self.device)
-        self.critic_target.eval()
 
         self.build_optimizer()
 
@@ -361,26 +375,28 @@ class PPOAgent(AgentBase):
         self.check_list = [
             ("configs", self.configs, 0),
             ("bundle", self.bundle, 1),
-            ("critic_target", self.critic_target, 1),
             ("actor_critic_optimizer", self.actor_critic_optimizer, 1),
         ]
 
     def _unwrap(self, m):
         return m.module if hasattr(m, "module") else m
-    def _actor_forward(self, obs) -> torch.distributions.Distribution: # to be replaced
+    def _actor_forward(self, obs, predict_pose_list) -> torch.distributions.Distribution: # to be replaced
         observation = deepcopy(obs)
+        gt_traj_point = deepcopy(predict_pose_list)
+        gt_traj_point = torch.from_numpy(np.array(gt_traj_point, dtype=np.float32)).to(self.device)
+        traj_point_start = gt_traj_point.unsqueeze(1).transpose(0, 1)
         if self.configs.state_norm:
             observation = self.state_normalize.state_norm(observation)
         observation = self.obs2tensor(observation)
         b = self._unwrap(self.bundle)
-        b.multi_encoder.eval()
-        b.target_point_encoder.eval()
+        b.actor_encoder.eval()
+        b.actor_point_encoder.eval()
         b.actor_net.eval()
             
         with torch.no_grad():
-            traj_point_start = self.gt_traj_point.to(self.device).unsqueeze(1)
-            encoder_out, point_out = b.encode_obs(observation)
-            _, policy_out = b.actor_net(encoder_out, point_out, traj_point_start)
+            encoder_out, point_out = b.encode_actor_obs(observation)
+            length = torch.tensor(traj_point_start.size(1), device=traj_point_start.device)
+            _, policy_out = b.actor_net(encoder_out, point_out, traj_point_start, length)
             if self.discrete:
                 dist = Categorical(F.softmax(policy_out, dim=1))
             elif self.configs.dist_type == "beta":
@@ -408,7 +424,7 @@ class PPOAgent(AgentBase):
             action_np = int(action.detach().item()) if torch.is_tensor(action) else int(action)
             log_prob = float(log_prob_t.detach().cpu().item())
             return action_np, log_prob
-        if action_mask is not None:
+        if False and action_mask is not None:
             mean, std = action_dist.mean, action_dist.stddev
             action = self.action_filter.choose_action(mean, std, action_mask)
             action = torch.FloatTensor(action).to(self.device)
@@ -434,28 +450,31 @@ class PPOAgent(AgentBase):
         return action_np, log_prob
 
 
-    def choose_action(self, obs):
+    def choose_action(self, obs, predict_pose_list):
 
-        dist = self._actor_forward(obs)
+        dist = self._actor_forward(obs, predict_pose_list)
         action_mask = obs['action_mask']
         action, other_info = self._post_process_action(dist, action_mask)
                 
         return action, other_info
     
-    def choose_action_eval(self, obs):
+    def choose_action_eval(self, obs, predict_pose_list):
         observation = deepcopy(obs)
+        gt_traj_point = deepcopy(predict_pose_list)
+        gt_traj_point = torch.from_numpy(np.array(gt_traj_point, dtype=np.float32)).to(self.device)
+        traj_point_start = gt_traj_point.unsqueeze(1).transpose(0, 1)
         if self.configs.state_norm:
             observation = self.state_normalize.state_norm(observation)
         observation = self.obs2tensor(observation)
         b = self._unwrap(self.bundle)
-        b.multi_encoder.eval()
-        b.target_point_encoder.eval()
+        b.actor_encoder.eval()
+        b.actor_point_encoder.eval()
         b.actor_net.eval()
             
         with torch.no_grad():
-            traj_point_start = self.gt_traj_point.to(self.device).unsqueeze(1)
-            encoder_out, point_out = b.encode_obs(observation)
-            _, policy_out = b.actor_net(encoder_out, point_out, traj_point_start)
+            encoder_out, point_out = b.encode_actor_obs(observation)
+            length = torch.tensor(traj_point_start.size(1), device=traj_point_start.device)
+            _, policy_out = b.actor_net(encoder_out, point_out, traj_point_start, length)
             a_mean = torch.clamp(policy_out, -0.999, 0.999)
             a_mean = a_mean.detach().cpu().numpy().astype(np.float32).reshape(-1)
             
@@ -527,13 +546,13 @@ class PPOAgent(AgentBase):
     def atanh(self,x):
         return 0.5 * (torch.log1p(x) - torch.log1p(-x))
 
-    def get_log_prob(self, obs: np.ndarray, action: np.ndarray) -> float:
+    def get_log_prob(self, obs: np.ndarray, action: np.ndarray, predict_pose_list) -> float:
         """
         Get scalar log π(a|s) under current squashed Gaussian policy.
         Returned value is a python float, consistent with rollout.
         """
         # get u-space Normal distribution
-        dist_u = self._actor_forward(obs)   # Normal(mean_u, std)
+        dist_u = self._actor_forward(obs, predict_pose_list)   # Normal(mean_u, std)
 
         # a-space action -> tensor
         action = torch.as_tensor(action, dtype=torch.float32, device=self.device)
@@ -585,11 +604,11 @@ class PPOAgent(AgentBase):
         Args:
             observations(tuple): (obs, action, reward, done, log_prob, next_obs)
         '''
-        obs, action, reward, done, log_prob, next_obs = deepcopy(observations)
+        obs, action, reward, done, log_prob, next_obs, predict_pose_list = deepcopy(observations)
         if self.configs.state_norm:
             obs = self.state_normalize.state_norm(obs)
             next_obs = self.state_normalize.state_norm(next_obs,update=True)
-        observations = (obs, action, reward, done, log_prob, next_obs)
+        observations = (obs, action, reward, done, log_prob, next_obs, predict_pose_list)
         self.memory.push(observations)
 
     def _reward_norm(self, reward):
@@ -683,26 +702,39 @@ class PPOAgent(AgentBase):
         # 5) old log prob：同理一次性 numpy 化
         logp_np = np.asarray(batches["log_prob"], dtype=np.float32).reshape(-1, 1)
         old_log_prob_batch = torch.from_numpy(logp_np).to(self.device)
+
+        def pad_pose_seqs(pose_seqs, pad_token, device):
+            # pose_seqs: List[np.ndarray or Tensor], each [Li,4] or [1,Li,4]
+           # pose_seqs: List[list/np.ndarray], each is [Li,4] or list of (4,)
+            ts = []
+            lengths = torch.empty(len(pose_seqs), dtype=torch.long, device=device)
+
+            for i, s in enumerate(pose_seqs):
+                a = np.asarray(s, dtype=np.float32).reshape(-1, 4)  # [Li,4]
+                t = torch.from_numpy(a).to(device)                  # [Li,4]
+                ts.append(t)
+                lengths[i] = t.size(0)
+
+            tgt = pad_sequence(ts, batch_first=True, padding_value=float(pad_token))  # [B,T,4]
+            return tgt, lengths
+        
+        pose_seqs = batches["predict_pose_list"]
+        gt_traj_point_batch, length_batch = pad_pose_seqs(pose_seqs, 602, self.device)
         self.memory.clear()
 
 
         b = self._unwrap(self.bundle)
-        def encode_obs(obs_dict):
-            """
-            obs_dict: dict[str, Tensor], shapes follow your obs2tensor
-            """
-            return b.encode_obs(obs_dict)
 
         # GAE
         gae = 0
         adv_list = []
 
-        b.multi_encoder.eval()
-        b.target_point_encoder.eval()
+        b.actor_encoder.eval()
+        b.actor_point_encoder.eval()
         b.actor_net.eval()
+        b.critic_encoder.eval()
+        b.critic_point_encoder.eval()
         b.critic_net.eval()
-        # critic_target 通常保持 eval 即可（本来就是 target）
-        self.critic_target.eval()
 
         def ddp_global_mean_std(x: torch.Tensor, eps: float = 1e-5):
             """
@@ -727,10 +759,13 @@ class PPOAgent(AgentBase):
             return mean, std
 
         with torch.no_grad():
-            enc, pt = encode_obs(state_batch)
-            next_enc, next_pt = encode_obs(next_state_batch)
-            value = b.critic_net(enc, pt)
-            next_value = b.critic_net(next_enc, next_pt)
+            enc, pt = b.encode_critic_obs(state_batch)
+            # next_enc, next_pt = encode_obs(next_state_batch)
+            tgt = gt_traj_point_batch
+            len_next = length_batch                   # [B]
+            len_curr = (length_batch - 1).clamp(min=1)
+            value = b.critic_net(enc, pt, tgt, len_curr)
+            next_value = b.critic_net(enc, pt, tgt, len_next)
             if self.configs.use_gae:
                 adv, v_target = self.compute_gae_torch(
                     rewards=reward_batch,
@@ -752,22 +787,24 @@ class PPOAgent(AgentBase):
                 # adv = (adv - adv.mean()) / (adv.std() + 1e-5)
 
 
-        b.multi_encoder.train()
-        b.target_point_encoder.train()
+        b.actor_encoder.train()
+        b.actor_point_encoder.train()
         b.actor_net.train()
+        b.critic_encoder.train()
+        b.critic_point_encoder.train()
         b.critic_net.train()
-        # critic_target 通常保持 eval 即可（本来就是 target）
-        self.critic_target.eval()
 
         # 但你冻结的 embed_img 希望永远 eval，就再强制一下：
-        if hasattr(b.multi_encoder, "embed_img"):
-            b.multi_encoder.embed_img.eval()
+        if hasattr(b.actor_encoder, "embed_img"):
+            b.actor_encoder.embed_img.eval()
+
+        if hasattr(b.critic_encoder, "embed_img"):
+            b.critic_encoder.embed_img.eval()
         
         # apply multi update epoch
         mini_batch = self.configs.mini_batch
         batchsize = self.configs.batch_size
         train_times = batchsize//mini_batch if batchsize%mini_batch==0 else batchsize//mini_batch+1
-        traj_point_start = self.gt_traj_point.to(self.device)
         for _ in range(self.configs.mini_epoch):
             # use mini batch and shuffle data
             random_idx = np.arange(batchsize)
@@ -779,24 +816,19 @@ class PPOAgent(AgentBase):
                     ri = random_idx[i*mini_batch:(i+1)*mini_batch]
                 # state = state_batch[ri]
                 obs = self.get_obs(state_batch, ri)  # 仍然返回 dict[str, Tensor]
-                enc_train, pt_train = encode_obs(obs)
-                B = enc_train.size(0)
-                traj_point_start_mb = (
-                    traj_point_start
-                    .to(enc_train.device)
-                    .unsqueeze(1)          # (1, 4) -> (1, 1, 4)
-                    .expand(B, -1, -1)     # (B, 1, 4)
-                    .clone()               # 防止 inplace 梯度错误
-                )
+                actor_enc_train, actor_pt_train =  b.encode_actor_obs(obs)
+                critic_enc_train, critic_pt_train = b.encode_critic_obs(obs)
+                len_curr = (length_batch[ri] - 1).clamp(min=1)
+                traj_point_start_mb = gt_traj_point_batch[ri]
                 if self.discrete:
-                    _, policy_dist = b.actor_net(enc_train, pt_train, traj_point_start_mb)
+                    _, policy_dist = b.actor_net(actor_enc_train, actor_pt_train, traj_point_start_mb, len_curr)
                     dist = Categorical(F.softmax(policy_dist,dim=-1))
                     dist_entropy = dist.entropy().view(-1, 1)
                     log_prob= dist.log_prob(action_batch[ri].squeeze()).view(-1, 1)
                     old_log_prob = old_log_prob_batch[ri].view(-1,1)
 
                 elif self.configs.dist_type == "beta":
-                    _, policy_dist = b.actor_net(enc_train, pt_train, traj_point_start_mb)
+                    _, policy_dist = b.actor_net(actor_enc_train, actor_pt_train, traj_point_start_mb, len_curr)
                     alpha, beta = torch.chunk(policy_dist, 2, dim=-1)
                     alpha = F.softplus(alpha) + 1.0
                     beta = F.softplus(beta) + 1.0
@@ -807,7 +839,7 @@ class PPOAgent(AgentBase):
                     old_log_prob = old_log_prob_batch[ri]
 
                 elif self.configs.dist_type == "gaussian":
-                    _, policy_dist = b.actor_net(enc_train, pt_train, traj_point_start_mb)
+                    _, policy_dist = b.actor_net(actor_enc_train, actor_pt_train, traj_point_start_mb, len_curr)
                     a_mean = torch.clamp(policy_dist, -0.999, 0.999)
                     mean_u = self.atanh(a_mean)
                     log_std = b.log_std.expand_as(mean_u)
@@ -855,7 +887,7 @@ class PPOAgent(AgentBase):
                 if self.configs.policy_entropy:
                     actor_loss = actor_loss - self.configs.entropy_coef * dist_entropy
 
-                v_pred = b.critic_net(enc_train, pt_train)
+                v_pred = b.critic_net(critic_enc_train, critic_pt_train, traj_point_start_mb, len_curr)
                 critic_loss = F.mse_loss(v_target[ri], v_pred, reduction="none")
 
                 self.actor_critic_optimizer.zero_grad(set_to_none=True)
@@ -867,23 +899,30 @@ class PPOAgent(AgentBase):
                 if self.configs.gradient_clip:
                 # 对所有可训练参数一起 clip（包含 log_std）
                     trainable_params = [p for p in itertools.chain(
-                        b.multi_encoder.parameters(),
-                        b.target_point_encoder.parameters(),
+                        b.actor_encoder.parameters(),
+                        b.actor_point_encoder.parameters(),
                         b.actor_net.parameters(),
+                        b.critic_encoder.parameters(),
+                        b.critic_point_encoder.parameters(),
                         b.critic_net.parameters(),
                         [b.log_std],
                     ) if p.requires_grad]
                     nn.utils.clip_grad_norm_(trainable_params, 0.5)
                 self.actor_critic_optimizer.step()
 
-            self._soft_update(self.critic_target, b.critic_net)
-
         if self.configs.lr_decay: # learning rate decay
-            self.actor_critic_optimizer.param_groups[0]["lr"] = self.lr_decay(self.configs.lr_backbone, step)
-            self.actor_critic_optimizer.param_groups[1]["lr"] = self.lr_decay(self.configs.lr_actor, step)
-            self.actor_critic_optimizer.param_groups[2]["lr"] = self.lr_decay(self.configs.lr_actor, step)
-            self.actor_critic_optimizer.param_groups[3]["lr"] = self.lr_decay(self.configs.lr_log_std, step)
-            self.actor_critic_optimizer.param_groups[4]["lr"] = self.lr_decay(self.configs.lr_critic, step)
+            opt = self.actor_critic_optimizer
+
+            # actor
+            opt.param_groups[0]["lr"] = self.lr_decay(self.configs.lr_backbone, step)  # actor_encoder
+            opt.param_groups[1]["lr"] = self.lr_decay(self.configs.lr_actor, step)     # actor_point_encoder
+            opt.param_groups[2]["lr"] = self.lr_decay(self.configs.lr_actor, step)     # actor_net
+            opt.param_groups[3]["lr"] = self.lr_decay(self.configs.lr_log_std, step)   # log_std
+
+            # critic (independent)
+            opt.param_groups[4]["lr"] = self.lr_decay(self.configs.lr_backbone, step)  # critic_encoder
+            opt.param_groups[5]["lr"] = self.lr_decay(self.configs.lr_critic, step)    # critic_point_encoder
+            opt.param_groups[6]["lr"] = self.lr_decay(self.configs.lr_critic, step)    # critic_net
 
         # for debug
         a = actor_loss.detach().cpu().numpy()[0][0]
@@ -995,6 +1034,9 @@ class PPOAgent(AgentBase):
                 if not found and getattr(self, "verbose", False):
                     print("[load][WARN] log_std not found in optimizer param_groups. "
                         "Make sure build_optimizer() adds it before load().")
+                    
+            if hasattr(self, "freeze_multi_encoder_embed_img"):
+                self.freeze_multi_encoder_embed_img()
 
         else:
             obj = torch.load(path, map_location=self.device)

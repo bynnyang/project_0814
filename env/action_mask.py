@@ -92,7 +92,7 @@ class ActionMask():
         car_coords_y = car_coords[:,1].reshape(1,-1) # (1,4)
         Ox = x-radius*np.sin(theta)
         Oy = y+radius*np.cos(theta)
-        delta_phi = STEP_TIME_AND_LENGHT * actions[:,1]/10/radius # (42)  #0.5s仿真时间
+        delta_phi = MASK_STEP_TIME * actions[:,1]/10/radius # (42)  #0.5s仿真时间
         ptheta = theta
         px, py = x,y
 

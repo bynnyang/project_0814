@@ -27,6 +27,20 @@ def eval(env, agent, episode=2000, log_path='', multi_level=False, post_proc_act
     step_record = DefaultDict(list)
     path_length_record = DefaultDict(list)
     eval_record = []
+    init_pose = [[0.0,0.0,0.0]]
+    init_pose = np.array(init_pose, dtype=np.float32)   # [T,3] = (x,y,yaw)
+            # x,y 归一化到 [-1,1]
+    init_pose_x = np.clip(init_pose[:,0] / TRAJXRANGE, -1.0, 1.0)
+    init_pose_y = np.clip(init_pose[:,1] / TRAJYRANGE, -1.0, 1.0)
+    init_pose_yaw = init_pose[:,2]   # 假设是弧度
+
+            # [T,4] = (x_norm, y_norm, cos(yaw), sin(yaw))
+    init_pose_np = np.stack(
+        [init_pose_x, init_pose_y, np.cos(init_pose_yaw), np.sin(init_pose_yaw)],
+        axis=-1
+    ).reshape(4,)   # [T,4]
+
+    predict_step = REGRESSIVE_STEP
 
     for i in trange(episode):
         obs = env.reset(i+1)
@@ -37,25 +51,33 @@ def eval(env, agent, episode=2000, log_path='', multi_level=False, post_proc_act
         path_length = 0
         last_xy = (env.vehicle.state.loc.x, env.vehicle.state.loc.y)
         last_obs = obs['target']
+        eval_pose_list = []
+        eval_pose_list.append(init_pose_np)
         while not done:
             step_num += 1
             if post_proc_action:
-                action, _ = agent.choose_action_eval(obs)
+                action, _ = agent.choose_action_eval(obs, eval_pose_list)
             else:
                 action, _ = agent.get_action(obs)
-            if (last_obs == obs['target']).all():
-                action = env.action_space.sample()
+            # if (last_obs == obs['target']).all():
+            #     action = env.action_space.sample()
             last_obs = obs['target']
             next_obs, reward, done, info = env.step(action)
+            next_pose = agent.vcs_action_step(eval_pose_list[-1], action)
+            eval_pose_list.append(next_pose)
             total_reward += reward
-            obs = next_obs
+            if step_num % predict_step == 0:
+                obs = next_obs
+                eval_pose_list.clear()
+                eval_pose_list.append(init_pose_np)
+            # obs = next_obs
             path_length += np.linalg.norm(np.array(last_xy)-np.array((env.vehicle.state.loc.x, env.vehicle.state.loc.y)))
             last_xy = (env.vehicle.state.loc.x, env.vehicle.state.loc.y)
             
-            if info['path_to_dest'] is not None:
-                agent.set_planner_path(info['path_to_dest'])
-            else:
-                agent.reset()
+            # if info['path_to_dest'] is not None:
+            #     agent.set_planner_path(info['path_to_dest'])
+            # else:
+            #     agent.reset()
             if done:
                 if info['status']==Status.ARRIVED:
                     succ_record.append(1)

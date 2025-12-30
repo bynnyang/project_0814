@@ -65,7 +65,7 @@ class CarParking(gym.Env):
         self.use_lidar_observation = use_lidar_observation
         self.use_img_observation = use_img_observation
         self.use_action_mask = use_action_mask
-        self.render_mode = "rgb_array" if render_mode is None else render_mode
+        self.render_mode = "human" if render_mode is None else render_mode
         self.fps = fps
         self.screen: Optional[pygame.Surface] = None
         self.clock = None

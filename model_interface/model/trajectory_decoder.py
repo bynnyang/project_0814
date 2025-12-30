@@ -489,7 +489,7 @@ class TrajectoryDecoderONNX(nn.Module):
                                            tgt_key_padding_mask=tgt_padding_mask)
         return pred_traj_points
 
-    def forward(self, encoder_out, point_out, tgt, global_step=None):
+    def forward_sigle_step(self, encoder_out, point_out, tgt, global_step=None):
         if global_step is not None:
             self.update_scheduled_sampling_ratio(global_step)
 
@@ -555,7 +555,7 @@ class TrajectoryDecoderONNX(nn.Module):
         # return pred_actions, pred_actions_list[0]
     
 
-    def predict(self, encoder_out, point_out, tgt):
+    def forward(self, encoder_out, point_out, tgt, lengths):
         batch_size, length, feat_dim = tgt.size()
         assert feat_dim == 4
 
@@ -576,15 +576,70 @@ class TrajectoryDecoderONNX(nn.Module):
         tgt_embedding = tgt_embedding + self.pos_embed[:, :tgt.size(1), :]
 
         pred_actions_logtis = self.decoder(encoder_out, tgt_embedding, tgt_mask, tgt_padding_mask)
+        idx = (lengths - 1).clamp(min=0)
 
-        last_step_pred_action_logti = pred_actions_logtis[:, length - offset, :]
+        last_step_pred_action_logti = pred_actions_logtis[torch.arange(batch_size, device=tgt.device), idx, :]
         
         pred_actions = self.output_layer(last_step_pred_action_logti)
 
-        prev_point = tgt[:, length - 1, :]         # [B,4]
-        pred_point = self.kinematic_step(prev_point, pred_actions)  # [B,4]
+        prev_point = tgt[:, idx, :]         # [B,4]
+        # pred_point = self.kinematic_step(prev_point, pred_actions)  # [B,4]
 
-        return pred_point
+        return prev_point, pred_actions
+    
+
+class TrajectoryValueDecoderONNX(TrajectoryDecoderONNX):
+    """
+    复用 TrajectoryDecoderONNX 的:
+      - traj_embedding / pos_embed / tf_decoder / create_mask / decoder(...)
+    只把 output_layer 改为输出 1 维 value。
+    """
+    def __init__(self, cfg: Configuration):
+        super().__init__(cfg)
+        self.output_layer = nn.Sequential(
+            nn.Linear(self.cfg.tf_de_dim, 1)
+        )
+        self.output_layer = nn.Sequential(
+            nn.LayerNorm(self.cfg.tf_de_dim),
+            nn.Linear(self.cfg.tf_de_dim, 2 * self.cfg.tf_de_dim),
+            nn.GELU(),
+            nn.Linear(2 * self.cfg.tf_de_dim, 1),
+        )
+        self._init_value_head()
+
+    def _init_value_head(self):
+        for m in self.output_layer.modules():
+            if isinstance(m, nn.Linear):
+                # 最后一层 out_features==1 用小 gain
+                gain = 0.05 if m.out_features == 1 else 1.0
+                nn.init.orthogonal_(m.weight, gain=gain)
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0.0)
+
+    def forward(self, encoder_out, point_out, tgt, lengths):
+        # 直接复用你 TrajectoryDecoderONNX.forward 的流程 :contentReference[oaicite:3]{index=3}
+        batch_size, length, feat_dim = tgt.size()
+        assert feat_dim == 4
+
+        padding_num = self.cfg.autoregressive_points - 1 - length
+        global_context = point_out.reshape(-1, self.cfg.tf_de_dim)
+
+        if padding_num > 0:
+            padding = torch.ones(batch_size, padding_num, 4, device=tgt.device) * self.PAD_token
+            tgt = torch.cat([tgt, padding], dim=1)
+
+        tgt_mask, tgt_padding_mask = self.create_mask(tgt)
+
+        # 用 expand 更省显存（repeat 也可以）
+        final_global_context = global_context.unsqueeze(1).expand(-1, tgt.size(1), -1)
+
+        tgt_embedding = self.traj_embedding(tgt) + final_global_context + self.pos_embed[:, :tgt.size(1), :]
+        pred_h = self.decoder(encoder_out, tgt_embedding, tgt_mask, tgt_padding_mask)
+        idx = (lengths - 1).clamp(min=0)
+
+        h_t = pred_h[torch.arange(batch_size, device=tgt.device), idx, :]     # 和 actor 一样取当前步 token
+        value = self.output_layer(h_t)     # [B,1]
+        return value
 
     
 

@@ -216,7 +216,20 @@ if __name__=="__main__":
     case_id_list = []
     succ_record = []
     best_success_rate = [0, 0, 0, 0]
-    total_env_steps = 0 
+    total_env_steps = 0
+    regressive_step = REGRESSIVE_STEP
+    traj = [[0.0,0.0,0.0]]
+    traj = np.array(traj, dtype=np.float32)   # [T,3] = (x,y,yaw)
+            # x,y 归一化到 [-1,1]
+    traj_x = np.clip(traj[:,0] / TRAJXRANGE, -1.0, 1.0)
+    traj_y = np.clip(traj[:,1] / TRAJYRANGE, -1.0, 1.0)
+    traj_yaw = traj[:,2]   # 假设是弧度
+
+            # [T,4] = (x_norm, y_norm, cos(yaw), sin(yaw))
+    start_traj_point_np = np.stack(
+        [traj_x, traj_y, np.cos(traj_yaw), np.sin(traj_yaw)],
+        axis=-1
+    ).reshape(4,)   # [T,4]
 
     for i in range(args.train_episode):
         scene_chosen = scene_chooser.choose_case() #返回的是场景字符串
@@ -232,15 +245,22 @@ if __name__=="__main__":
         step_num = 0
         reward_info = []
         xy = []
+        predict_pose_list = []
+        predict_pose_list.append(start_traj_point_np)
         while not done:
             step_num += 1
-            action, log_prob = parking_agent.choose_action(obs)
+            action, log_prob = parking_agent.choose_action(obs, predict_pose_list)
             next_obs, reward, done, info = env.step(action)
             reward_info.append(list(info['reward_info'].values()))
             total_reward += reward
             reward_per_state_list.append(reward)
-            parking_agent.push_memory((obs, action, reward, done, log_prob, next_obs))
-            obs = next_obs
+            next_pose = parking_agent.vcs_action_step(predict_pose_list[-1], action)
+            predict_pose_list.append(next_pose)
+            parking_agent.push_memory((obs, action, reward, done, log_prob, next_obs, predict_pose_list))
+            if step_num % regressive_step == 0:
+                obs = next_obs
+                predict_pose_list.clear()
+                predict_pose_list.append(start_traj_point_np)
             total_env_steps += 1
             if len(parking_agent.memory) % parking_agent.configs.batch_size == 0:
                 if verbose and rank == 0:
@@ -253,10 +273,10 @@ if __name__=="__main__":
                 
             use_rs = info['path_to_dest'] is not None
             
-            if use_rs:
-                parking_agent.set_planner_path(info['path_to_dest'], True)
-            else:
-                parking_agent.reset()
+            # if use_rs:
+            #     parking_agent.set_planner_path(info['path_to_dest'], True)
+            # else:
+            #     parking_agent.reset()
 
             # —— 状态切换检测 & 打印 ——
             last = parking_agent._last_use_rs
@@ -346,7 +366,7 @@ if __name__=="__main__":
                 f_best_log.close()
             if distributed:
                 dist.barrier()
-        if (i+1) % 2000 == 0:
+        if (i+1) % 5000 == 0:
             if distributed:
                 dist.barrier()
             if rank == 0:

@@ -17,7 +17,8 @@ FRONT_HANG = 0.68  # front hang length
 REAR_HANG = 0.704  # rear hang length
 LENGTH = WHEEL_BASE+FRONT_HANG+REAR_HANG
 WIDTH = 1.781  # width
-STEP_TIME_AND_LENGHT = 0.6
+STEP_TIME_AND_LENGHT = 0.2
+MASK_STEP_TIME = 0.6
 
 from shapely.geometry import LinearRing
 VehicleBox = LinearRing([
@@ -51,8 +52,8 @@ N_DISCRETE_ACTION = len(discrete_actions)
 
 
 GAMMA = 0.98
-BATCH_SIZE = 5
-LR = 1e-4 #LR = 5e-6
+BATCH_SIZE = 2048
+LR = 5e-5 #LR = 5e-6
 TAU = 0.1
 MAX_TRAIN_STEP = 1e6
 ORTHOGONAL_INIT = True
@@ -218,3 +219,5 @@ TOLERANT_TIME = 200
 TRAJXRANGE = 10.0
 TRAJYRANGE = 10.0
 LIDARRANGE = 10.0
+
+REGRESSIVE_STEP = 10

@@ -1,4 +1,5 @@
 from vehicle_config import *
+import numpy as np
 class RsPlanner(object):
     def __init__(self, step_ratio:float) -> None:
         self.route = None
@@ -78,7 +79,7 @@ class ParkingAgent(object):
     def get_log_prob(self, obs, action):
         return self.agent.get_log_prob(obs, action)
 
-    def choose_action(self, obs):
+    def choose_action(self, obs, predict_pose_list):
         '''
         Get the fused decision from the planner and the agent.
         The action is clipped to the range of the safe action space using action mask.
@@ -91,13 +92,13 @@ class ParkingAgent(object):
             other: the other information, such as the log_prob of the action in case of PPO
         '''
         if not self.executing_rs:
-            return self.agent.choose_action(obs)
+            return self.agent.choose_action(obs, predict_pose_list)
         else:
             action = self.planner.get_action()
-            log_prob = self.agent.get_log_prob(obs, action)
+            log_prob = self.agent.get_log_prob(obs, action, predict_pose_list)
             return action, log_prob
         
-    def choose_action_eval(self, obs):
+    def choose_action_eval(self, obs, predict_pose_list):
         '''
         Get the fused decision from the planner and the agent.
         The action is clipped to the range of the safe action space using action mask.
@@ -110,10 +111,10 @@ class ParkingAgent(object):
             other: the other information, such as the log_prob of the action in case of PPO
         '''
         if not self.executing_rs:
-            return self.agent.choose_action_eval(obs)
+            return self.agent.choose_action_eval(obs, predict_pose_list)
         else:
             action = self.planner.get_action()
-            log_prob = self.agent.get_log_prob(obs, action)
+            log_prob = self.agent.get_log_prob(obs, action, predict_pose_list)
             return action, log_prob
         
     def get_action(self, obs):
@@ -133,6 +134,46 @@ class ParkingAgent(object):
             action = self.planner.get_action()
             log_prob = self.agent.get_log_prob(obs, action)
             return action, log_prob
+        
+    def vcs_action_step(self, prev_point, action):
+        """
+        prev_point: [B, 4] = (x_norm, y_norm, cos_yaw, sin_yaw)
+        action:     [B, 2] = (v_norm, delta_norm)  (tanh 输出)
+        return:     [B, 4] = 下一步的 (x_norm, y_norm, cos_yaw, sin_yaw)
+        """
+
+        # 1. 反归一化上一步的状态
+        x = prev_point[0] * TRAJXRANGE       # [B]
+        y = prev_point[1] * TRAJYRANGE       # [B]
+        cos_yaw = prev_point[2]
+        sin_yaw = prev_point[3]
+        yaw = np.arctan2(sin_yaw, cos_yaw)           # [-pi, pi]
+
+        # 2. 反归一化动作（根据你自己的映射方式调整）
+        # 假设 last_step_pred_action ∈ [-1,1]（tanh 输出）
+        delta    = action[0]
+        v = action[1]
+
+        # 3. 单轨运动学模型离散更新
+        dt = STEP_TIME_AND_LENGHT
+        L  = WHEEL_BASE
+
+        x_next   = x + v * np.cos(yaw) * dt
+        y_next   = y + v * np.sin(yaw) * dt
+        yaw_next = yaw + v / L * np.tan(delta) * dt
+
+        # 4. wrap yaw 到 [-pi, pi]（可微写法）
+        yaw_next = np.arctan2(np.sin(yaw_next), np.cos(yaw_next))
+
+        # 5. 再归一化 x,y，并重新编码 yaw 为 cos/sin
+        x_next_norm = x_next / TRAJXRANGE
+        y_next_norm = y_next / TRAJYRANGE
+
+        cos_next = np.cos(yaw_next)
+        sin_next = np.sin(yaw_next)
+
+        pred_point = np.stack([x_next_norm, y_next_norm, cos_next, sin_next], axis=-1).reshape(4,)  # [B,4]
+        return pred_point
             
     def push_memory(self, experience):
         self.agent.push_memory(experience)
