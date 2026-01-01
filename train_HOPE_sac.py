@@ -123,7 +123,7 @@ if __name__=="__main__":
     parser.add_argument('--agent_ckpt', type=str, default=None) # './model/ckpt/SAC.pt'
     parser.add_argument('--img_ckpt', type=str, default='./model/ckpt/autoencoder.pt')
     parser.add_argument('--train_episode', type=int, default=100000)
-    parser.add_argument('--eval_episode', type=int, default=2000)
+    parser.add_argument('--eval_episode', type=int, default=10)
     parser.add_argument('--verbose', type=bool, default=True)
     parser.add_argument('--visualize', type=bool, default=True)
     parser.add_argument('--config', default='./config/training_real.yaml', type=str)
@@ -209,6 +209,19 @@ if __name__=="__main__":
     succ_record = []
     total_step_num = 0
     best_success_rate = [0, 0, 0, 0]
+    regressive_step = REGRESSIVE_STEP
+    traj = [[0.0,0.0,0.0]]
+    traj = np.array(traj, dtype=np.float32)   # [T,3] = (x,y,yaw)
+            # x,y 归一化到 [-1,1]
+    traj_x = np.clip(traj[:,0] / TRAJXRANGE, -1.0, 1.0)
+    traj_y = np.clip(traj[:,1] / TRAJYRANGE, -1.0, 1.0)
+    traj_yaw = traj[:,2]   # 假设是弧度
+
+            # [T,4] = (x_norm, y_norm, cos(yaw), sin(yaw))
+    start_traj_point_np = np.stack(
+        [traj_x, traj_y, np.cos(traj_yaw), np.sin(traj_yaw)],
+        axis=-1
+    ).reshape(4,)   # [T,4]
 
     for i in range(args.train_episode):
         scene_chosen = scene_chooser.choose_case()
@@ -224,31 +237,71 @@ if __name__=="__main__":
         step_num = 0
         reward_info = []
         xy = []
+        predict_pose_list = []
+        predict_pose_list.append(start_traj_point_np)
         while not done:
             step_num += 1
             total_step_num += 1
             if total_step_num <= parking_agent.configs.memory_size and not parking_agent.executing_rs:
-                action = env.action_space.sample()
-                log_prob = parking_agent.get_log_prob(obs, action)
+                action_raw = env.action_space.sample()
+                action = [np.clip(action_raw[0] / VALID_STEER[1], -0.999, 0.999), np.clip(action_raw[1] / VALID_SPEED[1], -0.999, 0.999)]
+                log_prob = parking_agent.get_log_prob(obs, action, predict_pose_list)
             else:
-                action, log_prob = parking_agent.get_action(obs)
+                action, log_prob = parking_agent.get_action(obs, predict_pose_list)
 
             next_obs, reward, done, info = env.step(action)
             reward_info.append(list(info['reward_info'].values()))
             total_reward += reward
             reward_per_state_list.append(reward)
-            parking_agent.push_memory((obs, action, reward, done, log_prob, next_obs))
-            obs = next_obs
+            next_pose = parking_agent.vcs_action_step(predict_pose_list[-1], action)
+            predict_pose_list.append(next_pose)
+            parking_agent.push_memory((obs, action, reward, done, log_prob, next_obs, predict_pose_list))
+            if step_num % regressive_step == 0:
+                obs = next_obs
+                predict_pose_list.clear()
+                predict_pose_list.append(start_traj_point_np)
+            # obs = next_obs
             if total_step_num > parking_agent.configs.memory_size and total_step_num%10==0:
                 if verbose and rank == 0:
                     print("Updating the agent.")
-                actor_loss, critic_loss = parking_agent.update()
+                actor_loss, critic_loss = parking_agent.update(total_step_num)
                 if total_step_num%200==0 and (rank == 0):
                     writer.add_scalar("actor_loss", actor_loss, i)
                     writer.add_scalar("critic_loss", critic_loss, i)
             
-            if info['path_to_dest'] is not None:
-                parking_agent.set_planner_path(info['path_to_dest'])
+            use_rs = info['path_to_dest'] is not None
+            
+            if use_rs:
+                parking_agent.set_planner_path(info['path_to_dest'], True)
+            else:
+                parking_agent.reset()
+
+            # —— 状态切换检测 & 打印 ——
+            last = parking_agent._last_use_rs
+
+            if last is None:
+                # 第一次进入
+                print(f"{step_num}: {'use_rs_path' if use_rs else 'not_use_rs_path'} (start)")
+                parking_agent._state_start_frame = step_num
+
+            elif last != use_rs:
+                # 状态发生切换
+                duration = step_num - parking_agent._state_start_frame
+                print(
+                    f"{step_num}: "
+                    f"{'use_rs_path' if last else 'not_use_rs_path'} "
+                    f"lasted {duration} frames"
+                )
+
+                print(
+                    f"{step_num}: "
+                    f"{'use_rs_path' if use_rs else 'not_use_rs_path'} (start)"
+                )
+
+                parking_agent._state_start_frame = step_num
+
+            # 更新状态
+            parking_agent._last_use_rs = use_rs
 
             if done:
                 if info['status']==Status.ARRIVED:
@@ -265,8 +318,10 @@ if __name__=="__main__":
         if (not parking_agent.distributed) or rank == 0:     
             writer.add_scalar("total_reward", total_reward, i)
             writer.add_scalar("avg_reward", np.mean(reward_per_state_list[-1000:]), i)
-            writer.add_scalar("action_std0", parking_agent.log_std.detach().cpu().numpy().reshape(-1)[0],i)
-            writer.add_scalar("action_std1", parking_agent.log_std.detach().cpu().numpy().reshape(-1)[1],i)
+            bundle = parking_agent.agent._unwrap(parking_agent.agent.bundle)
+            log_std = bundle.log_std.detach().cpu().numpy().reshape(-1)
+            writer.add_scalar("action_std0", log_std[0],i)
+            writer.add_scalar("action_std1", log_std[1],i)
             writer.add_scalar("alpha", parking_agent.alpha.detach().cpu().numpy().reshape(-1)[0],i)
             for type_id in scene_chooser.scene_types:
                 writer.add_scalar("success_rate_%s"%scene_chooser.scene_types[type_id],
@@ -279,10 +334,13 @@ if __name__=="__main__":
 
         if verbose and i%10==0 and i>0 and rank == 0:
             print('success rate:',np.sum(succ_record),'/',len(succ_record))
-            print(parking_agent.log_std.detach().cpu().numpy().reshape(-1), parking_agent.alpha.detach().cpu().numpy().reshape(-1))
+            bundle = parking_agent.agent._unwrap(parking_agent.agent.bundle)
+            log_std = bundle.log_std.detach().cpu().numpy().reshape(-1)
+            print(log_std)
+            print(parking_agent.alpha.detach().cpu().numpy().reshape(-1))
             print("episode:%s  average reward:%s"%(i,np.mean(reward_list[-50:])))
             print(np.mean(parking_agent.actor_loss_list[-100:]),np.mean(parking_agent.critic_loss_list[-100:]))
-            print('time_cost ,rs_dist_reward ,dist_reward ,angle_reward ,box_union_reward')
+            print('time_cost ,rs_dist_reward ,dist_reward ,angle_reward ,box_union_reward ,gear_shift_reward ,abs_shape ,near_bonus, low_speed, risk_reward')
             for j in range(10):
                 print(case_id_list[-(10-j)],reward_list[-(10-j)],reward_info_list[-(10-j)])
             print("")
@@ -307,7 +365,7 @@ if __name__=="__main__":
                 f_best_log.close()
             if distributed:
                 dist.barrier()
-        if (i+1) % 2000 == 0:
+        if (i+1) % 5000 == 0:
             if distributed:
                 dist.barrier()
             if rank == 0:
@@ -344,18 +402,18 @@ if __name__=="__main__":
             os.makedirs(log_path)
         eval(env, parking_agent, episode=eval_episode, log_path=log_path, post_proc_action=choose_action)
         
-        # eval on complex
-        env.set_level('Complex')
-        log_path = save_path+'/complex'
-        if not os.path.exists(log_path):
-            os.makedirs(log_path)
-        eval(env, parking_agent, episode=eval_episode, log_path=log_path, post_proc_action=choose_action)
+        # # eval on complex
+        # env.set_level('Complex')
+        # log_path = save_path+'/complex'
+        # if not os.path.exists(log_path):
+        #     os.makedirs(log_path)
+        # eval(env, parking_agent, episode=eval_episode, log_path=log_path, post_proc_action=choose_action)
         
-        # eval on normalize
-        env.set_level('Normal')
-        log_path = save_path+'/normalize'
-        if not os.path.exists(log_path):
-            os.makedirs(log_path)
-        eval(env, parking_agent, episode=eval_episode, log_path=log_path, post_proc_action=choose_action)
+        # # eval on normalize
+        # env.set_level('Normal')
+        # log_path = save_path+'/normalize'
+        # if not os.path.exists(log_path):
+        #     os.makedirs(log_path)
+        # eval(env, parking_agent, episode=eval_episode, log_path=log_path, post_proc_action=choose_action)
 
     env.close()

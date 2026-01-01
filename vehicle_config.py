@@ -96,7 +96,7 @@ CRITIC_CONFIGS = {
     'lidar_shape':LIDAR_NUM,
     'target_shape':5,
     'action_mask_shape':N_DISCRETE_ACTION if USE_ACTION_MASK else None,
-    'img_shape':(3,64,64) if USE_IMG else None,
+    'img_shape':(3,512,512) if USE_IMG else None,
     'output_size':1,
     'embed_size':128,
     'hidden_size':256,

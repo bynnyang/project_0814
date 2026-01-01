@@ -76,8 +76,8 @@ class ParkingAgent(object):
     def executing_rs(self,):
         return not (self.planner is None or self.planner.route is None)
     
-    def get_log_prob(self, obs, action):
-        return self.agent.get_log_prob(obs, action)
+    def get_log_prob(self, obs, action, predict_pose_list):
+        return self.agent.get_log_prob(obs, action, predict_pose_list)
 
     def choose_action(self, obs, predict_pose_list):
         '''
@@ -117,7 +117,7 @@ class ParkingAgent(object):
             log_prob = self.agent.get_log_prob(obs, action, predict_pose_list)
             return action, log_prob
         
-    def get_action(self, obs):
+    def get_action(self, obs, predict_pose_list):
         '''
         Get the fused decision from the planner and the agent.
 
@@ -129,10 +129,10 @@ class ParkingAgent(object):
             other: the other information, such as the log_prob of the action in case of PPO
         '''
         if not self.executing_rs:
-            return self.agent.get_action(obs)
+            return self.agent.get_action(obs, predict_pose_list)
         else:
             action = self.planner.get_action()
-            log_prob = self.agent.get_log_prob(obs, action)
+            log_prob = self.agent.get_log_prob(obs, action, predict_pose_list)
             return action, log_prob
         
     def vcs_action_step(self, prev_point, action):
@@ -150,9 +150,12 @@ class ParkingAgent(object):
         yaw = np.arctan2(sin_yaw, cos_yaw)           # [-pi, pi]
 
         # 2. 反归一化动作（根据你自己的映射方式调整）
-        # 假设 last_step_pred_action ∈ [-1,1]（tanh 输出）
-        delta    = action[0]
-        v = action[1]
+        # 假设 last_step_pred_action ∈ [-1,1]（tanh 输出
+        delta_norm  = action[0]
+        v_norm = action[1]
+
+        v     = v_norm * VALID_SPEED[1]      # 映射到 [-v_max, v_max]，你也可以直接 v = v_norm * cfg.v_max
+        delta = delta_norm * VALID_STEER[1]  
 
         # 3. 单轨运动学模型离散更新
         dt = STEP_TIME_AND_LENGHT

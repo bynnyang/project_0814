@@ -61,9 +61,35 @@ class AgentBase(ABC):
         """Return an action based on the observation
         """
 
-    def _soft_update(self, target_net, current_net):
-        for target, current in zip(target_net.parameters(), current_net.parameters()):
-            target.data.copy_(current.data * self.configs.tau + target.data * (1. - self.configs.tau))
+    # def _soft_update(self, target_net, current_net):
+    #     for target, current in zip(target_net.parameters(), current_net.parameters()):
+    #         target.data.copy_(current.data * self.configs.tau + target.data * (1. - self.configs.tau))
+
+    @torch.no_grad()
+    def _soft_update(self, target_modules, current_modules, tau=None):
+        """
+        target_modules/current_modules: nn.Module 或 List[nn.Module]
+        支持你现在的三段式 critic：encoder / point_encoder / q_net
+        """
+        if tau is None:
+            tau = self.configs.tau
+
+        # 允许传单个module
+        if isinstance(target_modules, (list, tuple)):
+            t_list = target_modules
+        else:
+            t_list = [target_modules]
+
+        if isinstance(current_modules, (list, tuple)):
+            c_list = current_modules
+        else:
+            c_list = [current_modules]
+
+        assert len(t_list) == len(c_list), "target/current module list length mismatch"
+
+        for t_mod, c_mod in zip(t_list, c_list):
+            for t_p, c_p in zip(t_mod.parameters(), c_mod.parameters()):
+                t_p.data.mul_(1.0 - tau).add_(c_p.data, alpha=tau)
         
     def push_memory(self, observations):
         self.memory.push(observations)

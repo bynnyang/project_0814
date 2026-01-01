@@ -74,10 +74,10 @@ def eval(env, agent, episode=2000, log_path='', multi_level=False, post_proc_act
             path_length += np.linalg.norm(np.array(last_xy)-np.array((env.vehicle.state.loc.x, env.vehicle.state.loc.y)))
             last_xy = (env.vehicle.state.loc.x, env.vehicle.state.loc.y)
             
-            # if info['path_to_dest'] is not None:
-            #     agent.set_planner_path(info['path_to_dest'])
-            # else:
-            #     agent.reset()
+            if info['path_to_dest'] is not None:
+                agent.set_planner_path(info['path_to_dest'])
+            else:
+                agent.reset()
             if done:
                 if info['status']==Status.ARRIVED:
                     succ_record.append(1)

@@ -34,7 +34,7 @@ def reward_shaping(*args):
     info['status'] = status
     return obs, reward, status, info
 
-def action_rescale(action:np.ndarray, action_space, raw_action_range=(-1,1), explore:bool=True, epsilon:float=0.0):
+def action_rescale(action:np.ndarray, action_space, raw_action_range=(-0.999,0.999), explore:bool=True, epsilon:float=0.0):
     '''
     Parameters:
         `action`: the action output by the learning model
