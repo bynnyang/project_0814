@@ -214,7 +214,7 @@ class SACConfig(ConfigBase):
         self.dist_type = "gaussian"
         self.hidden_size = 256
         self.memory_size = 10240
-        self.batch_size = 32
+        self.batch_size = 128
         # self.mini_batch_size = 32
         self.mini_epoch = 1
         self.initial_temperature = 0.01
@@ -736,7 +736,7 @@ class SACAgent(AgentBase):
             
             tgt_next = gt_traj_point_batch.clone()        # [B,T,4]
             len_next = length_batch.clone()               # [B]
-            next_state_for_td = state_batch               # 默认段内：仍用 state_batch
+            next_state_for_td = {k: v.clone() for k, v in state_batch.items()}  # 独立副本
 
             # 找到边界样本 idx
             boundary_mask = (seg_done_batch.squeeze(1) > 0.5)  # [B] bool
@@ -785,7 +785,8 @@ class SACAgent(AgentBase):
             q2_parts = [b.q2_encoder, b.q2_point_encoder, b.q2_net]
 
 
-            with temporary_freeze_modules(q1_parts + q2_parts):
+            with temporary_freeze_modules(q1_parts + q2_parts),temporary_eval(b.q1_encoder, b.q1_point_encoder, b.q1_net,
+                                                                  b.q2_encoder, b.q2_point_encoder, b.q2_net):
                 # policy loss
                 action_, log_prob = self._get_action_and_log_prob(state_batch, tgt_train, len_curr)
 
@@ -806,7 +807,7 @@ class SACAgent(AgentBase):
                 alpha_loss.backward()
                 self.log_alpha_optimizer.step()
 
-            if step % 1000 ==0 and dist_gpu.get_rank() == 0:
+            if step % 1000 ==0 and ((not self.distributed) or dist_gpu.get_rank() == 0):
                 def safe_grad_norm(params):
                     gs = [p.grad.detach().norm() for p in params if p.grad is not None]
                     return torch.norm(torch.stack(gs)).item() if len(gs) > 0 else 0.0
