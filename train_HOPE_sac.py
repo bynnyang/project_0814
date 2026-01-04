@@ -295,22 +295,22 @@ if __name__=="__main__":
 
             if last is None:
                 # 第一次进入
-                print(f"{total_step_num}: {'use_rs_path' if use_rs else 'not_use_rs_path'} (start)")
+                # print(f"{total_step_num}: {'use_rs_path' if use_rs else 'not_use_rs_path'} (start)")
                 parking_agent._state_start_frame = total_step_num
 
             elif last != use_rs:
                 # 状态发生切换
                 duration = total_step_num - parking_agent._state_start_frame
-                print(
-                    f"{total_step_num}: "
-                    f"{'use_rs_path' if last else 'not_use_rs_path'} "
-                    f"lasted {duration} frames"
-                )
+                # print(
+                #     f"{total_step_num}: "
+                #     f"{'use_rs_path' if last else 'not_use_rs_path'} "
+                #     f"lasted {duration} frames"
+                # )
 
-                print(
-                    f"{total_step_num}: "
-                    f"{'use_rs_path' if use_rs else 'not_use_rs_path'} (start)"
-                )
+                # print(
+                #     f"{total_step_num}: "
+                #     f"{'use_rs_path' if use_rs else 'not_use_rs_path'} (start)"
+                # )
 
                 parking_agent._state_start_frame = total_step_num
 
