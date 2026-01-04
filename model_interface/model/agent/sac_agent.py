@@ -252,7 +252,7 @@ class SACAgent(AgentBase):
 
         # As a on-policy RL algorithm, PPO does not have memory, the self.memory represents
         # the buffer
-        self.memory = ReplayMemory(self.configs.memory_size, ["log_prob","next_obs", "predict_pose_list"])
+        self.memory = ReplayMemory(self.configs.memory_size, ["log_prob","next_obs", "predict_pose_list", "seg_done"])
 
         # tricks
         if self.configs.state_norm:
@@ -561,11 +561,11 @@ class SACAgent(AgentBase):
         Args:
             observations(tuple): (obs, action, reward, done, log_prob, next_obs)
         '''
-        obs, action, reward, done, log_prob, next_obs, predict_pose_list = deepcopy(observations)
+        obs, action, reward, done, log_prob, next_obs, predict_pose_list, seg_done = deepcopy(observations)
         if self.configs.state_norm:
             obs = self.state_normalize.state_norm(obs)
             next_obs = self.state_normalize.state_norm(next_obs,update=True)
-        observations = (obs, action, reward, done, log_prob, next_obs, predict_pose_list)
+        observations = (obs, action, reward, done, log_prob, next_obs, predict_pose_list, seg_done)
         self.memory.push(observations)
 
     def _reward_norm(self, reward):
@@ -705,6 +705,9 @@ class SACAgent(AgentBase):
             done_np = np.asarray(batches["done"], dtype=np.float32).reshape(-1, 1)
             done_batch = torch.from_numpy(done_np).to(self.device)
             next_state_batch = self.obs2tensor(batches["next_obs"])
+            seg_done_np = np.asarray(batches["seg_done"], dtype=np.float32).reshape(-1, 1)
+            seg_done_batch = torch.from_numpy(seg_done_np).to(self.device)  # [B,1] 0/1
+            PAD_TOKEN = 602.0
             def pad_pose_seqs(pose_seqs, pad_token, device):
                 ts = []
                 lengths = torch.empty(len(pose_seqs), dtype=torch.long, device=device)
@@ -719,7 +722,7 @@ class SACAgent(AgentBase):
                 return tgt, lengths
             
             pose_seqs = batches["predict_pose_list"]
-            gt_traj_point_batch, length_batch = pad_pose_seqs(pose_seqs, 602, self.device)
+            gt_traj_point_batch, length_batch = pad_pose_seqs(pose_seqs, PAD_TOKEN, self.device)
 
             # 0) 固定模式：online train、target eval
             b = self._unwrap(self.bundle)
@@ -727,15 +730,36 @@ class SACAgent(AgentBase):
 
             # 1) 永久冻结模块强制 eval（防 BN/Dropout 漂）
             self._keep_frozen_embed_img_eval()
+
+            if self.start_traj_point_np is None:
+                raise RuntimeError("start_traj_point_np is None. Call set_start_traj_point() in train script first.")
+            
+            tgt_next = gt_traj_point_batch.clone()        # [B,T,4]
+            len_next = length_batch.clone()               # [B]
+            next_state_for_td = state_batch               # 默认段内：仍用 state_batch
+
+            # 找到边界样本 idx
+            boundary_mask = (seg_done_batch.squeeze(1) > 0.5)  # [B] bool
+            if boundary_mask.any():
+                idx = torch.nonzero(boundary_mask, as_tuple=False).squeeze(1)
+
+                # next_state = next_obs（边界时）
+                # 注意：next_state_batch 已经 obs2tensor 过
+                for k in next_state_for_td.keys():
+                    next_state_for_td[k][idx] = next_state_batch[k][idx]
+
+                # tgt_next reset：第一 token = start，其余 padding；len_next=1
+                start = torch.as_tensor(self.start_traj_point_np, device=self.device, dtype=torch.float32)  # [4]
+                tgt_next[idx, :, :] = PAD_TOKEN
+                tgt_next[idx, 0, :] = start
+                len_next[idx] = 1
             
             # soft Q loss
             with torch.no_grad():
-                tgt = gt_traj_point_batch
-                len_next = length_batch                   # [B]
                 with temporary_eval(b.actor_encoder, b.actor_point_encoder, b.actor_net):
-                    next_action_batch, next_log_prob = self._get_action_and_log_prob(state_batch, tgt, len_next)
-                q1_target = self._q1_target_forward(state_batch, next_action_batch, tgt, len_next)
-                q2_target = self._q2_target_forward(state_batch, next_action_batch, tgt, len_next)
+                    next_action_batch, next_log_prob = self._get_action_and_log_prob(next_state_for_td, tgt_next, len_next)
+                q1_target = self._q1_target_forward(next_state_for_td, next_action_batch, tgt_next, len_next)
+                q2_target = self._q2_target_forward(next_state_for_td, next_action_batch, tgt_next, len_next)
                 q_target = reward_batch + (1 - done_batch) * self.configs.gamma * (
                     torch.min(q1_target, q2_target) - self.alpha.detach() * next_log_prob
                 )
@@ -760,6 +784,7 @@ class SACAgent(AgentBase):
             q1_parts = [b.q1_encoder, b.q1_point_encoder, b.q1_net]
             q2_parts = [b.q2_encoder, b.q2_point_encoder, b.q2_net]
 
+
             with temporary_freeze_modules(q1_parts + q2_parts):
                 # policy loss
                 action_, log_prob = self._get_action_and_log_prob(state_batch, tgt_train, len_curr)
@@ -772,6 +797,7 @@ class SACAgent(AgentBase):
                 self.actor_optimizer.zero_grad()
                 actor_loss.backward()
                 self.actor_optimizer.step()
+                self.actor_loss_list.append(actor_loss.mean().item())
 
             # optimize alpha
             if self.configs.learn_temperature:
@@ -779,6 +805,66 @@ class SACAgent(AgentBase):
                 self.log_alpha_optimizer.zero_grad()
                 alpha_loss.backward()
                 self.log_alpha_optimizer.step()
+
+            if step % 1000 ==0 and dist_gpu.get_rank() == 0:
+                def safe_grad_norm(params):
+                    gs = [p.grad.detach().norm() for p in params if p.grad is not None]
+                    return torch.norm(torch.stack(gs)).item() if len(gs) > 0 else 0.0
+                
+                actor_grad_ar = safe_grad_norm(b.actor_net.parameters())
+                actor_grad_enc = safe_grad_norm(b.actor_encoder.parameters()) if hasattr(b, "actor_encoder") else 0.0
+                actor_grad_pt  = safe_grad_norm(b.actor_point_encoder.parameters()) if hasattr(b, "actor_point_encoder") else 0.0
+
+                critic_grad_q1 = safe_grad_norm(b.q1_net.parameters())
+                critic_grad_enc = safe_grad_norm(b.q1_encoder.parameters()) if hasattr(b, "q1_encoder") else 0.0
+                critic_grad_pt  = safe_grad_norm(b.q1_point_encoder.parameters()) if hasattr(b, "q1_point_encoder") else 0.0
+                seg_mask = seg_done_batch.squeeze(1) > 0.5
+                with torch.no_grad():
+                    log = {
+                         # critic
+                        "Q1_mean": current_q1.mean().item(),
+                        "Q2_mean": current_q2.mean().item(),
+                        "Q_std": current_q1.std().item(),
+                        "q12_gap": (current_q1 - current_q2).abs().mean().item(),
+                        "q_target_mean": q_target.mean().item(),
+                        "q_target_std": q_target.std().item(),
+
+                        # loss
+                        "critic_loss": q1_loss.item(),
+                        "actor_loss": actor_loss.item(),
+
+                        # policy / entropy
+                        "logp_mean": log_prob.mean().item(),
+                        "entropy": (-log_prob).mean().item(),
+                        "alpha": self.alpha.item(),
+
+                        # gradients
+                        "actor_grad_ar": actor_grad_ar,
+                        "actor_grad_enc": actor_grad_enc,
+                        "actor_grad_pt": actor_grad_pt,
+
+                        "critic_grad_q1": critic_grad_q1,
+                        "critic_grad_enc": critic_grad_enc,
+                        "critic_grad_pt": critic_grad_pt,
+
+                        # prefix / segmentation
+                        "len_curr_mean": len_curr.float().mean().item(),
+                        "len_curr_min": len_curr.min().item(),
+                        "len_curr_max": len_curr.max().item(),
+                        "seg_done_ratio": seg_done_batch.float().mean().item(),
+                        "log_Q_seg": current_q1[seg_mask].mean().item() if seg_mask.any() else 0.0,
+                        "log_Q_nonseg": current_q1[~seg_mask].mean().item() if (~seg_mask).any() else 0.0,
+
+                        # action distribution
+                        "action_std_steer": action_[:,0].std().item(),
+                        "action_std_speed": action_[:,1].std().item(),
+                        "action_mean_steer": action_[:,0].mean().item(),
+                        "action_mean_speed": action_[:,1].mean().item(),
+                    }
+                    print("========== TRAIN LOG ==========")
+                    for k, v in log.items():
+                        print(f"{k}: {v}")
+                    print("================================")
 
             # soft update target networks
             # Q1 target update
@@ -792,6 +878,7 @@ class SACAgent(AgentBase):
                 [b.q2_target_encoder, b.q2_target_point_encoder, b.q2_target_net],
                 [b.q2_encoder,        b.q2_point_encoder,        b.q2_net]
             )
+            self.critic_loss_list.append(q1_loss.mean().item())
 
 
         # for debug
@@ -918,3 +1005,7 @@ class SACAgent(AgentBase):
 
         if getattr(self, "verbose", False):
             print(f"Load the model from {path}")
+
+
+    def set_start_traj_point(self, start_traj_point_np: np.ndarray):
+        self.start_traj_point_np = np.asarray(start_traj_point_np, dtype=np.float32).reshape(4,)

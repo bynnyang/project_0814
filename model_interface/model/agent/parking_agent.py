@@ -138,7 +138,7 @@ class ParkingAgent(object):
     def vcs_action_step(self, prev_point, action):
         """
         prev_point: [B, 4] = (x_norm, y_norm, cos_yaw, sin_yaw)
-        action:     [B, 2] = (v_norm, delta_norm)  (tanh 输出)
+        action:     [B, 2] = (delta_norm, v_norm)  (tanh 输出)
         return:     [B, 4] = 下一步的 (x_norm, y_norm, cos_yaw, sin_yaw)
         """
 

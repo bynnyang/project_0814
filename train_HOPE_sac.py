@@ -39,6 +39,12 @@ def setup_distributed():
         world_size = 1
     return device, distributed, rank, world_size
 
+def reserve_gpu_memory(device, reserve_mb=4096):
+    # reserve_mb: 预占用多少 MB 显存
+    n_bytes = reserve_mb * 1024 * 1024
+    dummy = torch.empty(n_bytes // 4, dtype=torch.float32, device=device)
+    return dummy
+
 
 class SceneChoose():
     def __init__(self) -> None:
@@ -132,6 +138,9 @@ if __name__=="__main__":
     config_obj = get_train_config_obj(config_path)
 
     verbose = args.verbose
+    # import warnings
+    # warnings.filterwarnings("error", message="Mean of empty slice.*", category=RuntimeWarning)
+    # warnings.filterwarnings("error", message="invalid value encountered in double_scalars.*", category=RuntimeWarning)
 
 
     if args.visualize:
@@ -156,6 +165,7 @@ if __name__=="__main__":
     if dist.is_available() and dist.is_initialized():
         dist.barrier()
     device, distributed, rank, world_size = setup_distributed()
+    gpu_reserver = reserve_gpu_memory(device, reserve_mb=25000)
     writer = SummaryWriter(save_path) if rank == 0 else None
     if dist.is_available() and dist.is_initialized():
         if dist.get_rank() == 0:
@@ -223,6 +233,8 @@ if __name__=="__main__":
         axis=-1
     ).reshape(4,)   # [T,4]
 
+    parking_agent.agent.set_start_traj_point(start_traj_point_np)
+
     for i in range(args.train_episode):
         scene_chosen = scene_chooser.choose_case()
         if scene_chosen == 'dlp':
@@ -255,14 +267,16 @@ if __name__=="__main__":
             reward_per_state_list.append(reward)
             next_pose = parking_agent.vcs_action_step(predict_pose_list[-1], action)
             predict_pose_list.append(next_pose)
-            parking_agent.push_memory((obs, action, reward, done, log_prob, next_obs, predict_pose_list))
-            if step_num % regressive_step == 0:
+            seg_done = (step_num % regressive_step == 0)
+
+            parking_agent.push_memory((obs, action, reward, done, log_prob, next_obs, predict_pose_list, seg_done))
+            if seg_done:
                 obs = next_obs
                 predict_pose_list.clear()
                 predict_pose_list.append(start_traj_point_np)
             # obs = next_obs
             if total_step_num > parking_agent.configs.memory_size and total_step_num%10==0:
-                if verbose and rank == 0:
+                if verbose and rank == 0 and total_step_num % 1000 == 0:
                     print("Updating the agent.")
                 actor_loss, critic_loss = parking_agent.update(total_step_num)
                 if total_step_num%200==0 and (rank == 0):
@@ -281,24 +295,24 @@ if __name__=="__main__":
 
             if last is None:
                 # 第一次进入
-                print(f"{step_num}: {'use_rs_path' if use_rs else 'not_use_rs_path'} (start)")
-                parking_agent._state_start_frame = step_num
+                print(f"{total_step_num}: {'use_rs_path' if use_rs else 'not_use_rs_path'} (start)")
+                parking_agent._state_start_frame = total_step_num
 
             elif last != use_rs:
                 # 状态发生切换
-                duration = step_num - parking_agent._state_start_frame
+                duration = total_step_num - parking_agent._state_start_frame
                 print(
-                    f"{step_num}: "
+                    f"{total_step_num}: "
                     f"{'use_rs_path' if last else 'not_use_rs_path'} "
                     f"lasted {duration} frames"
                 )
 
                 print(
-                    f"{step_num}: "
+                    f"{total_step_num}: "
                     f"{'use_rs_path' if use_rs else 'not_use_rs_path'} (start)"
                 )
 
-                parking_agent._state_start_frame = step_num
+                parking_agent._state_start_frame = total_step_num
 
             # 更新状态
             parking_agent._last_use_rs = use_rs
@@ -324,8 +338,15 @@ if __name__=="__main__":
             writer.add_scalar("action_std1", log_std[1],i)
             writer.add_scalar("alpha", parking_agent.alpha.detach().cpu().numpy().reshape(-1)[0],i)
             for type_id in scene_chooser.scene_types:
-                writer.add_scalar("success_rate_%s"%scene_chooser.scene_types[type_id],
-                    np.mean(scene_chooser.success_record[type_id][-100:]), i)
+                vals = scene_chooser.success_record[type_id][-100:]
+                mean_success = float(np.mean(vals)) if len(vals) > 0 else 0.0
+                writer.add_scalar(
+                    f"success_rate_{scene_chooser.scene_types[type_id]}",
+                    mean_success,
+                    i
+                )
+                # writer.add_scalar("success_rate_%s"%scene_chooser.scene_types[type_id],
+                #     np.mean(scene_chooser.success_record[type_id][-100:]), i)
             writer.add_scalar("step_num", step_num, i)
         reward_list.append(total_reward)
         reward_info = np.sum(np.array(reward_info), axis=0)
@@ -334,6 +355,7 @@ if __name__=="__main__":
 
         if verbose and i%10==0 and i>0 and rank == 0:
             print('success rate:',np.sum(succ_record),'/',len(succ_record))
+            print('success rate ratio: {:.6f}'.format(np.sum(succ_record) / len(succ_record)))
             bundle = parking_agent.agent._unwrap(parking_agent.agent.bundle)
             log_std = bundle.log_std.detach().cpu().numpy().reshape(-1)
             print(log_std)
@@ -345,12 +367,16 @@ if __name__=="__main__":
                 print(case_id_list[-(10-j)],reward_list[-(10-j)],reward_info_list[-(10-j)])
             print("")
 
+        def safe_mean_last(lst, n=100, default=0.0):
+            vals = lst[-n:] if lst is not None else []
+            return float(np.mean(vals)) if len(vals) > 0 else float(default)
+
         # save best model
         for type_id in scene_chooser.scene_types:
-            success_rate_normal = np.mean(scene_chooser.success_record[0][-100:])
-            success_rate_complex = np.mean(scene_chooser.success_record[1][-100:])
-            success_rate_extreme = np.mean(scene_chooser.success_record[2][-100:])
-            success_rate_dlp = np.mean(scene_chooser.success_record[3][-100:])
+            success_rate_normal  = safe_mean_last(scene_chooser.success_record.get(0, []), 100)
+            success_rate_complex = safe_mean_last(scene_chooser.success_record.get(1, []), 100)
+            success_rate_extreme = safe_mean_last(scene_chooser.success_record.get(2, []), 100)
+            success_rate_dlp     = safe_mean_last(scene_chooser.success_record.get(3, []), 100)
         if success_rate_normal >= best_success_rate[0] and success_rate_complex >= best_success_rate[1] and\
             success_rate_extreme >= best_success_rate[2] and i>100:
             raw_best_success_rate = np.array([success_rate_normal, success_rate_complex, success_rate_extreme, success_rate_dlp])
