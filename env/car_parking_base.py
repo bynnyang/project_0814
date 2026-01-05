@@ -361,12 +361,12 @@ class CarParking(gym.Env):
                 if in_zone_now:
                     # mild barrier
                     term_m = (1.0/(d + eps) - 1.0/(RISK_START + eps))
-                    risk_reward += -K_MILD * (term_m ** 2)
+                    risk_reward += -K_MILD * (min((term_m ** 2), 10.0))
 
                     # strong barrier inside 0.3m
                     if d < SHIFT_START:
                         term_s = (1.0/(d + eps) - 1.0/(SHIFT_START + eps))
-                        risk_reward += -K_STRONG * (term_s ** 2)
+                        risk_reward += -K_STRONG * (min((term_s ** 2), 4.0))
 
                 # 2) trend bonus/penalty (only when we were already in zone)
                 if self._risk_in_zone and (prev_d is not None) and in_zone_now:
@@ -406,7 +406,7 @@ class CarParking(gym.Env):
         # thresholds (tune)
         MIN_MOVE = 0.05             # 2cm per step considered "moved"
         MIN_YAW  = 1.0 * math.pi/180.0  # 1 deg considered "turned"
-        STUCK_START = 3             # allow a few steps for fine control
+        STUCK_START = 4             # allow a few steps for fine control
         STUCK_K = 0.05              # penalty per extra stuck step (set 0 to disable)
 
         # compute movement

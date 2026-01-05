@@ -275,7 +275,7 @@ if __name__=="__main__":
                 predict_pose_list.clear()
                 predict_pose_list.append(start_traj_point_np)
             # obs = next_obs
-            if total_step_num > parking_agent.configs.memory_size and total_step_num%10==0:
+            if total_step_num > 8000 and total_step_num%10==0:
                 if verbose and rank == 0 and total_step_num % 1000 == 0:
                     print("Updating the agent.")
                 actor_loss, critic_loss = parking_agent.update(total_step_num)

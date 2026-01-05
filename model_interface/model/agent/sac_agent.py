@@ -219,7 +219,7 @@ class SACConfig(ConfigBase):
         self.mini_epoch = 1
         self.initial_temperature = 0.01
         self.action_dim = 2
-        self.target_entropy = -self.action_dim
+        self.target_entropy = self.action_dim
 
         # tricks
         self.learn_temperature = True
@@ -440,11 +440,10 @@ class SACAgent(AgentBase):
         with torch.no_grad():
             encoder_out, point_out = b.encode_actor_obs(observation)
             length = torch.tensor(traj_point_start.size(1), device=traj_point_start.device)
-            _, policy_out = b.actor_net(encoder_out, point_out, traj_point_start, length)
+            _, _, policy_out = b.actor_net(encoder_out, point_out, traj_point_start, length)
             if len(policy_out.shape) > 1 and policy_out.shape[0] > 1:
                 raise NotImplementedError
-            a_mean = torch.clamp(policy_out, -0.999, 0.999)
-            mu = self.atanh(a_mean)   
+            mu = policy_out   
             log_std = b.log_std.expand_as(mu)  # To make 'log_std' have the same dimension as 'mean'
             log_std = torch.clamp(log_std, min=-2.0, max=0.0)
             std = torch.exp(log_std)
@@ -503,8 +502,8 @@ class SACAgent(AgentBase):
         with torch.no_grad():
             encoder_out, point_out = b.encode_actor_obs(observation)
             length = torch.tensor(traj_point_start.size(1), device=traj_point_start.device)
-            _, policy_out = b.actor_net(encoder_out, point_out, traj_point_start, length)
-            a_mean = torch.clamp(policy_out, -0.999, 0.999)
+            _, action_map, _ = b.actor_net(encoder_out, point_out, traj_point_start, length)
+            a_mean = torch.clamp(action_map, -0.999, 0.999)
             a_mean = a_mean.detach().cpu().numpy().astype(np.float32).reshape(-1)
             
         return a_mean, None
@@ -598,15 +597,16 @@ class SACAgent(AgentBase):
     def alpha(self):
         return self.log_alpha.exp()
     
-    def _get_action_and_log_prob(self, obs, gt_traj_point_batch, length_batch):
+    def _get_action_and_log_prob(self, obs, gt_traj_point_batch, length_batch, step):
         observation = obs
         b = self._unwrap(self.bundle)
         encoder_out, point_out = b.encode_actor_obs(observation)
         len_curr = length_batch
-        _, policy_dist = b.actor_net(encoder_out, point_out, gt_traj_point_batch, len_curr)
+        _, _, policy_dist = b.actor_net(encoder_out, point_out, gt_traj_point_batch, len_curr)
 
-        a_mean = torch.clamp(policy_dist, -0.999, 0.999)
-        mean_u = self.atanh(a_mean)
+        # a_mean = torch.clamp(policy_dist, -0.999, 0.999)
+        # mean_u = self.atanh(a_mean)
+        mean_u = policy_dist
         log_std = b.log_std.expand_as(mean_u)
         log_std = torch.clamp(log_std, -2.0, 0.0)
         std = torch.exp(log_std)
@@ -619,6 +619,28 @@ class SACAgent(AgentBase):
 
         log_prob = dist_u.log_prob(action_batch_u).sum(dim=1, keepdim=True)
         log_prob = log_prob - torch.log(1.0 - action_batch.pow(2) + 1e-6).sum(dim=1, keepdim=True)
+
+
+        if step % 500 == 0 and ((not self.distributed) or dist_gpu.get_rank() == 0):
+            with torch.no_grad():
+                log = {
+                    # mean / std (u-space)
+                    "mean_u_abs_mean": mean_u.abs().mean().item(),
+                    "mean_u_max": mean_u.abs().max().item(),
+                    "log_std_mean": log_std.mean().item(),
+                    "log_std_min": log_std.min().item(),
+                    "log_std_max": log_std.max().item(),
+
+                    # action ([-1,1])
+                    "action_std": action_batch.std(dim=0).mean().item(),
+                    "action_abs_mean": action_batch.abs().mean().item(),
+                    "action_sat_ratio": (action_batch.abs() > 0.95).float().mean().item(),
+                }
+
+                print("===== POLICY DIAG =====")
+                for k, v in log.items():
+                    print(f"{k}: {v:.6f}")
+                print("=======================")
         return action_batch, log_prob
     
 
@@ -757,7 +779,7 @@ class SACAgent(AgentBase):
             # soft Q loss
             with torch.no_grad():
                 with temporary_eval(b.actor_encoder, b.actor_point_encoder, b.actor_net):
-                    next_action_batch, next_log_prob = self._get_action_and_log_prob(next_state_for_td, tgt_next, len_next)
+                    next_action_batch, next_log_prob = self._get_action_and_log_prob(next_state_for_td, tgt_next, len_next, 1)
                 q1_target = self._q1_target_forward(next_state_for_td, next_action_batch, tgt_next, len_next)
                 q2_target = self._q2_target_forward(next_state_for_td, next_action_batch, tgt_next, len_next)
                 q_target = reward_batch + (1 - done_batch) * self.configs.gamma * (
@@ -788,7 +810,7 @@ class SACAgent(AgentBase):
             with temporary_freeze_modules(q1_parts + q2_parts),temporary_eval(b.q1_encoder, b.q1_point_encoder, b.q1_net,
                                                                   b.q2_encoder, b.q2_point_encoder, b.q2_net):
                 # policy loss
-                action_, log_prob = self._get_action_and_log_prob(state_batch, tgt_train, len_curr)
+                action_, log_prob = self._get_action_and_log_prob(state_batch, tgt_train, len_curr, step)
 
                 q1_value = self._q1_forward(state_batch, action_, tgt_train, len_curr)
                 q2_value = self._q2_forward(state_batch, action_, tgt_train, len_curr)
@@ -802,12 +824,12 @@ class SACAgent(AgentBase):
 
             # optimize alpha
             if self.configs.learn_temperature:
-                alpha_loss = (self.alpha * (-log_prob - self.configs.target_entropy).detach()).mean()
+                alpha_loss = (self.log_alpha * (-log_prob - self.configs.target_entropy).detach()).mean()
                 self.log_alpha_optimizer.zero_grad()
                 alpha_loss.backward()
                 self.log_alpha_optimizer.step()
 
-            if step % 1000 ==0 and ((not self.distributed) or dist_gpu.get_rank() == 0):
+            if step % 500 ==0 and ((not self.distributed) or dist_gpu.get_rank() == 0):
                 def safe_grad_norm(params):
                     gs = [p.grad.detach().norm() for p in params if p.grad is not None]
                     return torch.norm(torch.stack(gs)).item() if len(gs) > 0 else 0.0
@@ -835,7 +857,7 @@ class SACAgent(AgentBase):
                         "actor_loss": actor_loss.item(),
 
                         # policy / entropy
-                        "logp_mean": log_prob.mean().item(),
+                        "log_prob_mean": log_prob.mean().item(),
                         "entropy": (-log_prob).mean().item(),
                         "alpha": self.alpha.item(),
 

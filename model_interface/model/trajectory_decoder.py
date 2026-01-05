@@ -581,11 +581,12 @@ class TrajectoryDecoderONNX(nn.Module):
         last_step_pred_action_logti = pred_actions_logtis[torch.arange(batch_size, device=tgt.device), idx, :]
         
         pred_actions = self.output_layer(last_step_pred_action_logti)
+        mean_u = self.output_layer[0](last_step_pred_action_logti)
 
         prev_point = tgt[:, idx, :]         # [B,4]
         # pred_point = self.kinematic_step(prev_point, pred_actions)  # [B,4]
 
-        return prev_point, pred_actions
+        return prev_point, pred_actions, mean_u
     
 
 class TrajectoryValueDecoderONNX(TrajectoryDecoderONNX):

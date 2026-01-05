@@ -126,7 +126,7 @@ REWARD_WEIGHT = OrderedDict({'time_cost':1,\
 
 OUTBOUND_REWARD = -20
 OUTTIME_REWARD = -1
-ARRIVED_REWARD = 20
+ARRIVED_REWARD = 30
 COLLIDED_REWARD = -20
 
 
@@ -157,9 +157,9 @@ PARA_PARK_WALL_DIST_DICT = {
     'Normal':4.5,
 }
 BAY_PARK_WALL_DIST_DICT = {
-    'Extrem':6.0,
-    'Complex':6.0,
-    'Normal':7.0,
+    'Extrem':8.0,
+    'Complex':8.0,
+    'Normal':8.0,
 }
 N_OBSTACLE_DICT = {
     'Extrem':8,
