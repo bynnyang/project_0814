@@ -220,6 +220,21 @@ if __name__=="__main__":
     total_step_num = 0
     best_success_rate = [0, 0, 0, 0]
     regressive_step = REGRESSIVE_STEP
+
+    def rs_mix_prob(step: int) -> float:
+        # 0   ~  50k : 0.9
+        # 50k ~ 150k : 0.5
+        # 150k~ 300k : 0.1
+        # 300k+      : 0.0
+        if step < 8_000:
+            return 1.1
+        if step < 50_000:
+            return 0.9
+        if step < 150_000:
+            return 0.5
+        if step < 300_000:
+            return 0.1
+        return 0.0
     traj = [[0.0,0.0,0.0]]
     traj = np.array(traj, dtype=np.float32)   # [T,3] = (x,y,yaw)
             # x,y 归一化到 [-1,1]
@@ -283,13 +298,24 @@ if __name__=="__main__":
                     writer.add_scalar("actor_loss", actor_loss, i)
                     writer.add_scalar("critic_loss", critic_loss, i)
             
-            use_rs = info['path_to_dest'] is not None
+            rs_path_avail = (info.get('path_to_dest', None) is not None)
+
+            # 退火混合：rs_path_avail 时才抽样是否执行 RS
+            if rs_path_avail:
+                p_rs = rs_mix_prob(total_step_num)
+                use_rs = (np.random.random() < p_rs)
+            else:
+                p_rs = 0.0
+                use_rs = False
             
             if use_rs:
                 parking_agent.set_planner_path(info['path_to_dest'], True)
             else:
                 parking_agent.reset()
 
+            if ((not parking_agent.distributed) or rank == 0) and (total_step_num % 1000 == 0):
+                print(f"rs/p_rs: {p_rs:.3f} rs/use_rs: {use_rs}  episode: {i}  total_step_num: {total_step_num}")
+    
             # —— 状态切换检测 & 打印 ——
             last = parking_agent._last_use_rs
 
@@ -358,8 +384,8 @@ if __name__=="__main__":
             print('success rate ratio: {:.6f}'.format(np.sum(succ_record) / len(succ_record)))
             bundle = parking_agent.agent._unwrap(parking_agent.agent.bundle)
             log_std = bundle.log_std.detach().cpu().numpy().reshape(-1)
-            print(log_std)
-            print(parking_agent.alpha.detach().cpu().numpy().reshape(-1))
+            print("log_std: ", log_std)
+            print("alpha: ", parking_agent.alpha.detach().cpu().numpy().reshape(-1))
             print("episode:%s  average reward:%s"%(i,np.mean(reward_list[-50:])))
             print(np.mean(parking_agent.actor_loss_list[-100:]),np.mean(parking_agent.critic_loss_list[-100:]))
             print('time_cost ,rs_dist_reward ,dist_reward ,angle_reward ,box_union_reward ,gear_shift_reward ,abs_shape ,near_bonus, low_speed, risk_reward')
@@ -391,7 +417,7 @@ if __name__=="__main__":
                 f_best_log.close()
             if distributed:
                 dist.barrier()
-        if (i+1) % 5000 == 0:
+        if (i+1) % 2000 == 0:
             if distributed:
                 dist.barrier()
             if rank == 0:
@@ -411,35 +437,37 @@ if __name__=="__main__":
             f.savefig('%s/reward.png'%save_path)
             f.clear()
 
-    eval_episode = args.eval_episode
-    choose_action = False
-    with torch.no_grad():
-        # eval on dlp
-        env.set_level('dlp')
-        log_path = save_path+'/dlp'
-        if not os.path.exists(log_path):
-            os.makedirs(log_path)
-        eval(env, parking_agent, episode=eval_episode, log_path=log_path, post_proc_action=choose_action)
-        
-        # eval on extreme
-        env.set_level('Extrem')
-        log_path = save_path+'/extreme'
-        if not os.path.exists(log_path):
-            os.makedirs(log_path)
-        eval(env, parking_agent, episode=eval_episode, log_path=log_path, post_proc_action=choose_action)
-        
-        # # eval on complex
-        # env.set_level('Complex')
-        # log_path = save_path+'/complex'
-        # if not os.path.exists(log_path):
-        #     os.makedirs(log_path)
-        # eval(env, parking_agent, episode=eval_episode, log_path=log_path, post_proc_action=choose_action)
-        
-        # # eval on normalize
-        # env.set_level('Normal')
-        # log_path = save_path+'/normalize'
-        # if not os.path.exists(log_path):
-        #     os.makedirs(log_path)
-        # eval(env, parking_agent, episode=eval_episode, log_path=log_path, post_proc_action=choose_action)
+    
+        if (i+1) % 1000 == 0 and ((not parking_agent.distributed) or rank == 0):
+            eval_episode = args.eval_episode
+            choose_action = True
+            with torch.no_grad():
+                # eval on dlp
+                env.set_level('dlp')
+                log_path = save_path+'/dlp'
+                if not os.path.exists(log_path):
+                    os.makedirs(log_path)
+                eval(env, parking_agent, episode=eval_episode, log_path=log_path, post_proc_action=choose_action)
+                
+                # eval on extreme
+                env.set_level('Extrem')
+                log_path = save_path+'/extreme'
+                if not os.path.exists(log_path):
+                    os.makedirs(log_path)
+                eval(env, parking_agent, episode=eval_episode, log_path=log_path, post_proc_action=choose_action)
+                
+                # # eval on complex
+                # env.set_level('Complex')
+                # log_path = save_path+'/complex'
+                # if not os.path.exists(log_path):
+                #     os.makedirs(log_path)
+                # eval(env, parking_agent, episode=eval_episode, log_path=log_path, post_proc_action=choose_action)
+                
+                # # eval on normalize
+                # env.set_level('Normal')
+                # log_path = save_path+'/normalize'
+                # if not os.path.exists(log_path):
+                #     os.makedirs(log_path)
+                # eval(env, parking_agent, episode=eval_episode, log_path=log_path, post_proc_action=choose_action)
 
     env.close()

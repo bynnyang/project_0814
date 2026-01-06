@@ -851,6 +851,10 @@ class SACAgent(AgentBase):
                         "q12_gap": (current_q1 - current_q2).abs().mean().item(),
                         "q_target_mean": q_target.mean().item(),
                         "q_target_std": q_target.std().item(),
+                        "Q_actor_pi_q1" : q1_value.mean().item(),
+                        "Q_actor_pi_q2" : q2_value.mean().item(),
+                        "Q_actor_pi_min": torch.min(q1_value, q2_value).mean().item(),
+                        "RS_actor_pi_Q_gap": (torch.min(current_q1, current_q2) - torch.min(q1_value, q2_value)).mean().item(),
 
                         # loss
                         "critic_loss": q1_loss.item(),
