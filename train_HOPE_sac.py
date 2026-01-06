@@ -226,13 +226,13 @@ if __name__=="__main__":
         # 50k ~ 150k : 0.5
         # 150k~ 300k : 0.1
         # 300k+      : 0.0
-        if step < 8_000:
+        if step < 9000:
             return 1.1
-        if step < 50_000:
+        if step < 50000:
             return 0.9
-        if step < 150_000:
+        if step < 150000:
             return 0.5
-        if step < 300_000:
+        if step < 300000:
             return 0.1
         return 0.0
     traj = [[0.0,0.0,0.0]]
@@ -290,7 +290,7 @@ if __name__=="__main__":
                 predict_pose_list.clear()
                 predict_pose_list.append(start_traj_point_np)
             # obs = next_obs
-            if total_step_num > 8000 and total_step_num%10==0:
+            if total_step_num > 9000 and total_step_num%10==0:
                 if verbose and rank == 0 and total_step_num % 1000 == 0:
                     print("Updating the agent.")
                 actor_loss, critic_loss = parking_agent.update(total_step_num)
