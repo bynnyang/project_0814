@@ -221,20 +221,18 @@ if __name__=="__main__":
     best_success_rate = [0, 0, 0, 0]
     regressive_step = REGRESSIVE_STEP
 
-    def rs_mix_prob(step: int) -> float:
-        # 0   ~  50k : 0.9
-        # 50k ~ 150k : 0.5
-        # 150k~ 300k : 0.1
-        # 300k+      : 0.0
-        if step < 9000:
+    def rs_mix_prob(episode: int) -> float:
+        start_episode = 1000
+        end_episode = 10000
+        start_p = 1.0
+        end_p = 0.1
+        if episode < start_episode:
             return 1.1
-        if step < 50000:
-            return 0.9
-        if step < 150000:
-            return 0.5
-        if step < 300000:
-            return 0.1
-        return 0.0
+        if episode >= end_episode:
+            return end_p
+
+        ratio = (episode - start_episode) / (end_episode - start_episode)
+        return start_p + ratio * (end_p - start_p)
     traj = [[0.0,0.0,0.0]]
     traj = np.array(traj, dtype=np.float32)   # [T,3] = (x,y,yaw)
             # x,y 归一化到 [-1,1]
@@ -302,7 +300,7 @@ if __name__=="__main__":
 
             # 退火混合：rs_path_avail 时才抽样是否执行 RS
             if rs_path_avail:
-                p_rs = rs_mix_prob(total_step_num)
+                p_rs = rs_mix_prob(i)
                 use_rs = (np.random.random() < p_rs)
             else:
                 p_rs = 0.0
