@@ -542,13 +542,13 @@ class CarParking(gym.Env):
         rel_angle = math.atan2(dest_pos[1]-ego_pos[1], dest_pos[0]-ego_pos[0]) - ego_pos[2]
         rel_dest_heading = dest_pos[2] - ego_pos[2]
         tgt_repr = np.array([rel_distance, math.cos(rel_angle), math.sin(rel_angle),\
-            math.cos(rel_dest_heading), math.sin(rel_dest_heading)])
+            math.cos(rel_dest_heading), math.sin(rel_dest_heading)], dtype=np.float32)
         return tgt_repr   #获得[rel_distance, math.cos(rel_angle), math.sin(rel_angle), math.cos(rel_dest_heading), math.sin(rel_dest_heading)]
 
     def _get_park_targrt_point(self,):
         dest_pos = (self.dest_pose_vcs.loc.x, self.dest_pose_vcs.loc.y, self.dest_pose_vcs.heading)
         tgt_point = np.array([self.dest_pose_vcs.loc.x, self.dest_pose_vcs.loc.y, math.cos(
-            self.dest_pose_vcs.heading), math.sin(self.dest_pose_vcs.heading)])
+            self.dest_pose_vcs.heading), math.sin(self.dest_pose_vcs.heading)], dtype=np.float32)
         return tgt_point  
     def render(self, mode: str = "human"):
         assert mode in self.metadata["render_mode"]

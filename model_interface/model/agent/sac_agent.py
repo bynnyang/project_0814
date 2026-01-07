@@ -558,33 +558,77 @@ class SACAgent(AgentBase):
     def push_memory(self, observations):
         '''
         Args:
-            observations(tuple): (obs, action, reward, done, log_prob, next_obs)
+      
         '''
-        obs, action, reward, done, log_prob, next_obs, predict_pose_list, seg_done = deepcopy(observations)
+        obs, action, reward, done, log_prob, next_obs, pose_seq_cpu, seg_done = observations
+
+        obs2, action2, reward2, done2, log_prob2, next_obs2, seg_done2 = deepcopy(
+            (obs, action, reward, done, log_prob, next_obs, seg_done)
+        )
+
         if self.configs.state_norm:
-            obs = self.state_normalize.state_norm(obs)
-            next_obs = self.state_normalize.state_norm(next_obs,update=True)
-        observations = (obs, action, reward, done, log_prob, next_obs, predict_pose_list, seg_done)
-        self.memory.push(observations)
+            obs2 = self.state_normalize.state_norm(obs2)
+            next_obs2 = self.state_normalize.state_norm(next_obs2, update=True)
+
+        self.memory.push((obs2, action2, reward2, done2, log_prob2, next_obs2, pose_seq_cpu, seg_done2))
 
     def _reward_norm(self, reward):
         return (reward - reward.mean()) / (reward.std() + 1e-8)
+    def obs2tensor(self, obs, non_blocking=True, pin=True, normalize_image=True):
+   
+        keys = list(self.configs.observation_shape.keys())
+        device = self.device
+        use_cuda = (device.type == "cuda")
+        nb = (non_blocking and use_cuda)
 
-    def obs2tensor(self, obs):
+        def _cpu_tensor_from_value(v, expect_uint8=False):
+            # numpy / list
+            if expect_uint8:
+                a = np.asarray(v, dtype=np.uint8)
+            else:
+                a = np.asarray(v, dtype=np.float32)
+            return torch.from_numpy(a).contiguous()  # CPU
+
+        def _to_device(t_cpu: torch.Tensor):
+            if pin and use_cuda:
+                t_cpu = t_cpu.pin_memory()
+            return t_cpu.to(device, non_blocking=nb)
+
+        out = {}
+
         if isinstance(obs, list):
-            merged_obs = {}
-            for obs_type in self.configs.observation_shape.keys():
-                merged_obs[obs_type] = []
-                for o in obs:
-                    merged_obs[obs_type].append(o[obs_type])
-                merged_obs[obs_type] = torch.FloatTensor(np.array(merged_obs[obs_type])).to(self.device)
-            obs = merged_obs 
+            # batch path
+            for k in keys:
+                if k == "image":
+                    ts = [_cpu_tensor_from_value(o[k], expect_uint8=True) for o in obs]
+                    batch_cpu = torch.stack(ts, dim=0).contiguous()          # [B,...] uint8 CPU
+                    batch = _to_device(batch_cpu)                            # uint8 GPU
+                    if normalize_image:
+                        batch = batch.float().div_(255.0)                    # float32 GPU in-place
+                    out[k] = batch
+                else:
+                    ts = [_cpu_tensor_from_value(o[k], expect_uint8=False) for o in obs]
+                    batch_cpu = torch.stack(ts, dim=0).contiguous()          # [B,...] float32 CPU
+                    out[k] = _to_device(batch_cpu)                           # float32 GPU
+            return out
+
         elif isinstance(obs, dict):
-            for obs_type in self.configs.observation_shape.keys():
-                obs[obs_type] = torch.FloatTensor(obs[obs_type]).to(self.device).unsqueeze(0)
+            # single path
+            for k in keys:
+                if k == "image":
+                    t_cpu = _cpu_tensor_from_value(obs[k], expect_uint8=True).unsqueeze(0)  # [1,...] uint8
+                    t = _to_device(t_cpu)
+                    if normalize_image:
+                        t = t.float().div_(255.0)
+                    out[k] = t
+                else:
+                    t_cpu = _cpu_tensor_from_value(obs[k], expect_uint8=False).unsqueeze(0) # [1,...] float32
+                    out[k] = _to_device(t_cpu)
+            return out
+
         else:
-            raise NotImplementedError()
-        return obs
+            raise NotImplementedError(f"Unsupported obs type: {type(obs)}")
+        
     
     def get_obs(self, obs, ids):
         return {k:obs[k][ids] for k in obs }
@@ -621,7 +665,7 @@ class SACAgent(AgentBase):
         log_prob = log_prob - torch.log(1.0 - action_batch.pow(2) + 1e-6).sum(dim=1, keepdim=True)
 
 
-        if step % 500 == 0 and ((not self.distributed) or dist_gpu.get_rank() == 0):
+        if step % 2000 == 0 and ((not self.distributed) or dist_gpu.get_rank() == 0):
             with torch.no_grad():
                 log = {
                     # mean / std (u-space)
@@ -730,21 +774,48 @@ class SACAgent(AgentBase):
             seg_done_np = np.asarray(batches["seg_done"], dtype=np.float32).reshape(-1, 1)
             seg_done_batch = torch.from_numpy(seg_done_np).to(self.device)  # [B,1] 0/1
             PAD_TOKEN = 602.0
-            def pad_pose_seqs(pose_seqs, pad_token, device):
-                ts = []
-                lengths = torch.empty(len(pose_seqs), dtype=torch.long, device=device)
+            # def pad_pose_seqs(pose_seqs, pad_token, device):
+            #     ts = []
+            #     lengths = torch.empty(len(pose_seqs), dtype=torch.long, device=device)
 
-                for i, s in enumerate(pose_seqs):
-                    a = np.asarray(s, dtype=np.float32).reshape(-1, 4)  # [Li,4]
-                    t = torch.from_numpy(a).to(device)                  # [Li,4]
-                    ts.append(t)
-                    lengths[i] = t.size(0)
+            #     for i, s in enumerate(pose_seqs):
+            #         a = np.asarray(s, dtype=np.float32).reshape(-1, 4)  # [Li,4]
+            #         t = torch.from_numpy(a).to(device)                  # [Li,4]
+            #         ts.append(t)
+            #         lengths[i] = t.size(0)
 
-                tgt = pad_sequence(ts, batch_first=True, padding_value=float(pad_token))  # [B,T,4]
+            #     tgt = pad_sequence(ts, batch_first=True, padding_value=float(pad_token))  # [B,T,4]
+            #     return tgt, lengths
+            
+            def pad_pose_seqs_cpu_then_to_gpu(pose_seqs_cpu, pad_token, device):
+                """
+                pose_seqs_cpu: List[torch.Tensor] on CPU, each [Li,4]
+                return:
+                    tgt: [B,T,4] on GPU
+                    lengths: [B] on GPU (long)
+                """
+                # 1) 计算 lengths（CPU）
+                lengths_cpu = torch.as_tensor([t.size(0) for t in pose_seqs_cpu], dtype=torch.long)
+
+                # 2) 在 CPU 上 pad（CPU）
+                tgt_cpu = pad_sequence(
+                    pose_seqs_cpu,
+                    batch_first=True,
+                    padding_value=float(pad_token),
+                )  # [B,T,4] CPU
+
+                # 3) 可选：pin memory（加速 H2D）
+                if device.type == "cuda":
+                    tgt_cpu = tgt_cpu.pin_memory()
+                    lengths_cpu = lengths_cpu.pin_memory()
+
+                # 4) 一次性搬到 GPU（关键）
+                tgt = tgt_cpu.to(device, non_blocking=True)
+                lengths = lengths_cpu.to(device, non_blocking=True)
                 return tgt, lengths
             
             pose_seqs = batches["predict_pose_list"]
-            gt_traj_point_batch, length_batch = pad_pose_seqs(pose_seqs, PAD_TOKEN, self.device)
+            gt_traj_point_batch, length_batch = pad_pose_seqs_cpu_then_to_gpu(pose_seqs, PAD_TOKEN, self.device)
 
             # 0) 固定模式：online train、target eval
             b = self._unwrap(self.bundle)
@@ -829,7 +900,7 @@ class SACAgent(AgentBase):
                 alpha_loss.backward()
                 self.log_alpha_optimizer.step()
 
-            if step % 500 ==0 and ((not self.distributed) or dist_gpu.get_rank() == 0):
+            if step % 2000 ==0 and ((not self.distributed) or dist_gpu.get_rank() == 0):
                 def safe_grad_norm(params):
                     gs = [p.grad.detach().norm() for p in params if p.grad is not None]
                     return torch.norm(torch.stack(gs)).item() if len(gs) > 0 else 0.0
@@ -909,8 +980,8 @@ class SACAgent(AgentBase):
 
 
         # for debug
-        a = actor_loss.detach().cpu().numpy()
-        b = q1_loss.item()
+        a = float(actor_loss.detach().item())
+        b = float(q1_loss.detach().item())
         return a, b
 
     def save(self, path: str = None, params_only: bool = None) -> None:

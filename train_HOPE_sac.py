@@ -280,19 +280,20 @@ if __name__=="__main__":
             reward_per_state_list.append(reward)
             next_pose = parking_agent.vcs_action_step(predict_pose_list[-1], action)
             predict_pose_list.append(next_pose)
+            pose_seq_cpu = torch.as_tensor(
+                np.asarray(predict_pose_list, dtype=np.float32).reshape(-1, 4),
+                dtype=torch.float32
+            )  # CPU tensor, [L,4]
             seg_done = (step_num % regressive_step == 0)
-
-            parking_agent.push_memory((obs, action, reward, done, log_prob, next_obs, predict_pose_list, seg_done))
+            parking_agent.push_memory((obs, action, reward, done, log_prob, next_obs, pose_seq_cpu, seg_done))
             if seg_done:
                 obs = next_obs
                 predict_pose_list.clear()
                 predict_pose_list.append(start_traj_point_np)
             # obs = next_obs
-            if total_step_num > 9000 and total_step_num%10==0:
-                if verbose and rank == 0 and total_step_num % 1000 == 0:
-                    print("Updating the agent.")
+            if total_step_num > parking_agent.configs.memory_size and total_step_num%10==0:
                 actor_loss, critic_loss = parking_agent.update(total_step_num)
-                if total_step_num%200==0 and (rank == 0):
+                if total_step_num%1000==0 and (rank == 0):
                     writer.add_scalar("actor_loss", actor_loss, i)
                     writer.add_scalar("critic_loss", critic_loss, i)
             
@@ -353,7 +354,7 @@ if __name__=="__main__":
                     if scene_chosen == 'dlp':
                         dlp_case_chooser.update_success_record(0, case_id)
 
-        if (not parking_agent.distributed) or rank == 0:     
+        if total_step_num%1000==0 and ((not parking_agent.distributed) or rank == 0):     
             writer.add_scalar("total_reward", total_reward, i)
             writer.add_scalar("avg_reward", np.mean(reward_per_state_list[-1000:]), i)
             bundle = parking_agent.agent._unwrap(parking_agent.agent.bundle)
@@ -369,8 +370,6 @@ if __name__=="__main__":
                     mean_success,
                     i
                 )
-                # writer.add_scalar("success_rate_%s"%scene_chooser.scene_types[type_id],
-                #     np.mean(scene_chooser.success_record[type_id][-100:]), i)
             writer.add_scalar("step_num", step_num, i)
         reward_list.append(total_reward)
         reward_info = np.sum(np.array(reward_info), axis=0)
@@ -424,16 +423,16 @@ if __name__=="__main__":
                 dist.barrier()
         
 
-        if verbose and i%20==0 and rank == 0:
-            episodes = [j for j in range(len(reward_list))]
-            mean_reward = [np.mean(reward_list[max(0,j-50):j+1]) for j in range(len(reward_list))]
-            plt.plot(episodes,reward_list)
-            plt.plot(episodes,mean_reward)
-            plt.xlabel('episodes')
-            plt.ylabel('reward')
-            f = plt.gcf()
-            f.savefig('%s/reward.png'%save_path)
-            f.clear()
+        # if verbose and i%20==0 and rank == 0:
+        #     episodes = [j for j in range(len(reward_list))]
+        #     mean_reward = [np.mean(reward_list[max(0,j-50):j+1]) for j in range(len(reward_list))]
+        #     plt.plot(episodes,reward_list)
+        #     plt.plot(episodes,mean_reward)
+        #     plt.xlabel('episodes')
+        #     plt.ylabel('reward')
+        #     f = plt.gcf()
+        #     f.savefig('%s/reward.png'%save_path)
+        #     f.clear()
 
     
         if (i+1) % 1000 == 0 and ((not parking_agent.distributed) or rank == 0):

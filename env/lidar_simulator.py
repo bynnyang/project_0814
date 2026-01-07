@@ -43,7 +43,7 @@ class LidarSimlator():
         ego_pos = (ego_state.loc.x, ego_state.loc.y, ego_state.heading)
         rotated_obstacles = self._rotate_and_filter_obstacles(ego_pos, obstacles)
         lidar_obs = self._fast_calc_lidar_obs(rotated_obstacles)
-        return np.array(lidar_obs - self.vehicle_boundary)
+        return np.array(lidar_obs - self.vehicle_boundary, dtype=np.float32)
     
     def get_vehicle_boundary(self, ):
         lidar_base = []

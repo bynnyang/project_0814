@@ -193,7 +193,8 @@ class ActionMask():
         backward_step_len[-1] -= 1
         forward_step_len_ = minimum_filter1d(forward_step_len, kernel)
         backward_step_len_ = minimum_filter1d(backward_step_len, kernel)
-        return np.clip(np.concatenate((forward_step_len_, backward_step_len_)), 0, self.n_iter)/self.n_iter
+        out = np.clip(np.concatenate((forward_step_len_, backward_step_len_)), 0, self.n_iter)/self.n_iter
+        return out.astype(np.float32, copy=False)
     
     def atanh(self,x):
         return 0.5 * (np.log1p(x) - np.log1p(-x))
