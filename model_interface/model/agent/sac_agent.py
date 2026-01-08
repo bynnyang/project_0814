@@ -214,9 +214,9 @@ class SACConfig(ConfigBase):
         self.dist_type = "gaussian"
         self.hidden_size = 256
         self.memory_size = 10240
-        self.batch_size = 128
+        self.batch_size = 256
         # self.mini_batch_size = 32
-        self.mini_epoch = 1
+        self.mini_epoch = 2
         self.initial_temperature = 0.01
         self.action_dim = 2
         self.target_entropy = self.action_dim * 0.5
@@ -484,6 +484,14 @@ class SACAgent(AgentBase):
         action, other_info = self._post_process_action(dist, action_mask)
 
         return action, other_info
+    
+    def sample_action_with_mask(self, obs):
+        action_mask = obs
+        action = self.action_filter.sample_action_with_mask(action_mask)
+        action = np.clip(action, -0.999, 0.999)
+        return action
+
+
     
 
     def choose_action_eval(self, obs, predict_pose_list):

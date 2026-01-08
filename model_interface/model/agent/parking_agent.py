@@ -98,6 +98,11 @@ class ParkingAgent(object):
             log_prob = self.agent.get_log_prob(obs, action, predict_pose_list)
             return action, log_prob
         
+
+    def sample_action_with_mask(self, obs):
+    
+            return self.agent.sample_action_with_mask(obs)
+        
     def choose_action_eval(self, obs, predict_pose_list):
         '''
         Get the fused decision from the planner and the agent.
@@ -132,7 +137,7 @@ class ParkingAgent(object):
             return self.agent.get_action(obs, predict_pose_list)
         else:
             action = self.planner.get_action()
-            log_prob = self.agent.get_log_prob(obs, action, predict_pose_list)
+            log_prob = 0.0
             return action, log_prob
         
     def vcs_action_step(self, prev_point, action):

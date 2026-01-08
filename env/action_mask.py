@@ -17,6 +17,7 @@ class ActionMask():
         self.vehicle_lidar_base = self.get_vehicle_lidar_base()
         self.up_sample_rate = 10
         self.dist_star = self.precompute()
+        self.act_rng  = np.random.default_rng()
 
     def get_vehicle_lidar_base(self, ):
         lidar_base = []
@@ -236,6 +237,22 @@ class ActionMask():
         prob_softmax = exp_logits / (np.sum(exp_logits) + 1e-12)
         actions = np.arange(len(possible_actions))
         action_chosen = np.random.choice(actions, p=prob_softmax)
+        return possible_actions[action_chosen]
+    
+    def sample_action_with_mask(self, action_mask):
+
+        possible_actions = np.array(self.action_space)
+        # deal the scaling
+        scale_steer = VALID_STEER[1]
+        # scale_speed = 1
+        scale_speed = VALID_SPEED[1] 
+        possible_actions = possible_actions/np.array([scale_steer, scale_speed])
+        logits =np.log(action_mask + 1e-12)   # 软权重进log域
+        logits = logits - np.max(logits)              # 防止exp溢出
+        exp_logits = np.exp(logits)
+        prob_softmax = exp_logits / (np.sum(exp_logits) + 1e-12)
+        actions = np.arange(len(possible_actions))
+        action_chosen = self.act_rng.choice(actions, p=prob_softmax)
         return possible_actions[action_chosen]
     
 

@@ -69,6 +69,7 @@ class SceneChoose():
                 scene_chosen = self._choose_case_worst_perform()
             else:
                 scene_chosen = self._choose_case_uniform()
+        scene_chosen = 1
         self.scene_record.append(scene_chosen)
         return self.scene_types[scene_chosen]
     
@@ -255,6 +256,7 @@ if __name__=="__main__":
         else:
             case_id = None
         obs = env.reset(case_id, None, scene_chosen)
+        sample_mask = obs['action_mask']
         parking_agent.reset()
         case_id_list.append(env.map.case_id)
         done = False
@@ -268,13 +270,15 @@ if __name__=="__main__":
             step_num += 1
             total_step_num += 1
             if total_step_num <= parking_agent.configs.memory_size and not parking_agent.executing_rs:
-                action_raw = env.action_space.sample()
-                action = [np.clip(action_raw[0] / VALID_STEER[1], -0.999, 0.999), np.clip(action_raw[1] / VALID_SPEED[1], -0.999, 0.999)]
-                log_prob = parking_agent.get_log_prob(obs, action, predict_pose_list)
+                if step_num % 5 == 1:
+                    macro = parking_agent.sample_action_with_mask(sample_mask)
+                action = macro
+                log_prob = 0.0
             else:
                 action, log_prob = parking_agent.get_action(obs, predict_pose_list)
 
             next_obs, reward, done, info = env.step(action)
+            sample_mask = next_obs['action_mask']
             reward_info.append(list(info['reward_info'].values()))
             total_reward += reward
             reward_per_state_list.append(reward)
@@ -440,25 +444,25 @@ if __name__=="__main__":
             choose_action = True
             with torch.no_grad():
                 # eval on dlp
-                env.set_level('dlp')
-                log_path = save_path+'/dlp'
-                if not os.path.exists(log_path):
-                    os.makedirs(log_path)
-                eval(env, parking_agent, episode=eval_episode, log_path=log_path, post_proc_action=choose_action)
-                
-                # eval on extreme
-                env.set_level('Extrem')
-                log_path = save_path+'/extreme'
-                if not os.path.exists(log_path):
-                    os.makedirs(log_path)
-                eval(env, parking_agent, episode=eval_episode, log_path=log_path, post_proc_action=choose_action)
-                
-                # # eval on complex
-                # env.set_level('Complex')
-                # log_path = save_path+'/complex'
+                # env.set_level('dlp')
+                # log_path = save_path+'/dlp'
                 # if not os.path.exists(log_path):
                 #     os.makedirs(log_path)
                 # eval(env, parking_agent, episode=eval_episode, log_path=log_path, post_proc_action=choose_action)
+                
+                # # eval on extreme
+                # env.set_level('Extrem')
+                # log_path = save_path+'/extreme'
+                # if not os.path.exists(log_path):
+                #     os.makedirs(log_path)
+                # eval(env, parking_agent, episode=eval_episode, log_path=log_path, post_proc_action=choose_action)
+                
+                # eval on complex
+                env.set_level('Complex')
+                log_path = save_path+'/complex'
+                if not os.path.exists(log_path):
+                    os.makedirs(log_path)
+                eval(env, parking_agent, episode=eval_episode, log_path=log_path, post_proc_action=choose_action)
                 
                 # # eval on normalize
                 # env.set_level('Normal')
