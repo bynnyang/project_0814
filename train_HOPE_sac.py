@@ -351,7 +351,7 @@ if __name__=="__main__":
                 predict_pose_list.clear()
                 predict_pose_list.append(start_traj_point_np)
             # obs = next_obs
-            if total_step_num > parking_agent.configs.memory_size and total_step_num%10==0:
+            if total_step_num > parking_agent.configs.memory_size and total_step_num%256==0:
                 actor_loss, critic_loss = parking_agent.update(total_step_num)
                 if total_step_num%1000==0 and (rank == 0):
                     writer.add_scalar("actor_loss", actor_loss, i)
