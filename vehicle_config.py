@@ -214,7 +214,7 @@ TRAJ_POINT_COLOR       = (0, 160, 0)   # 深绿：轨迹中心线点
 TRAJ_BOX_COLOR         = (0, 200, 0)   # 亮绿：缩小小车 box
 
 RS_MAX_DIST = 15
-TOLERANT_TIME = 200
+TOLERANT_TIME = 300
 
 TRAJXRANGE = 10.0
 TRAJYRANGE = 10.0

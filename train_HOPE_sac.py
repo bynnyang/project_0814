@@ -20,6 +20,8 @@ from evaluation.eval_utils import eval
 from vehicle_config import *
 from utils.config import get_train_config_obj
 import torch.distributed as dist
+import threading
+
 
 
 def setup_distributed():
@@ -38,6 +40,45 @@ def setup_distributed():
         rank = 0
         world_size = 1
     return device, distributed, rank, world_size
+
+# def gpu_burn(device=0, iters_per_burst=5, sleep_ms=8):
+#     torch.cuda.set_device(device)
+#     x = torch.randn(2048, 2048, device='cuda')
+
+#     start = torch.cuda.Event(enable_timing=False)
+#     end = torch.cuda.Event(enable_timing=False)
+
+#     while True:
+#         start.record()
+#         for _ in range(iters_per_burst):
+#             x = x @ x
+#         end.record()
+
+#         # 等这“一小串”GPU任务真正跑完（只阻塞 burn 线程）
+#         end.synchronize()
+
+#         # 让出 CPU（释放 GIL），避免 burn 线程抢占 CPU
+#         time.sleep(sleep_ms / 1000.0)
+
+def gpu_burn(stop_flag, run_flag, device=0, iters_per_burst=5, sleep_ms=8):
+    torch.cuda.set_device(device)
+    x = torch.randn(3000, 3000, device='cuda')
+    end = torch.cuda.Event(enable_timing=False)
+
+    while not stop_flag.is_set():
+
+        # —— 暂停逻辑（核心）——
+        if not run_flag.is_set():
+            time.sleep(0.01)    # 睡一下，避免 CPU 忙等
+            continue
+
+        # —— GPU burn —— 
+        for _ in range(iters_per_burst):
+            x = x @ x
+        end.record()
+        end.synchronize()
+
+        time.sleep(sleep_ms / 1000.0)
 
 def reserve_gpu_memory(device, reserve_mb=4096):
     # reserve_mb: 预占用多少 MB 显存
@@ -62,13 +103,13 @@ class SceneChoose():
         
         
     def choose_case(self,):
-        if len(self.scene_record) < self.history_horizon:
-            scene_chosen = self._choose_case_uniform()
-        else:
-            if np.random.random() > 0.5:
-                scene_chosen = self._choose_case_worst_perform()
-            else:
-                scene_chosen = self._choose_case_uniform()
+        # if len(self.scene_record) < self.history_horizon:
+        #     scene_chosen = self._choose_case_uniform()
+        # else:
+        #     if np.random.random() > 0.5:
+        #         scene_chosen = self._choose_case_worst_perform()
+        #     else:
+        #         scene_chosen = self._choose_case_uniform()
         scene_chosen = 1
         self.scene_record.append(scene_chosen)
         return self.scene_types[scene_chosen]
@@ -248,6 +289,17 @@ if __name__=="__main__":
     ).reshape(4,)   # [T,4]
 
     parking_agent.agent.set_start_traj_point(start_traj_point_np)
+    stop_flag = threading.Event()   # 控制“彻底退出”
+    run_flag  = threading.Event()   # 控制“是否运行”
+    run_flag.set()                  # 默认启动就运行
+    t = threading.Thread(target=gpu_burn, args=(stop_flag, run_flag), daemon=True)
+    t.start()
+    # ====== burn 调度参数 ======
+    BURN_ON_STEPS  = 4000   # 开启持续多少 step
+    BURN_OFF_STEPS = 6000   # 暂停持续多少 step
+    BURN_PERIOD    = BURN_ON_STEPS + BURN_OFF_STEPS
+    # t = threading.Thread(target=gpu_burn, daemon=True)
+    # t.start()
 
     for i in range(args.train_episode):
         scene_chosen = scene_chooser.choose_case()
@@ -266,16 +318,20 @@ if __name__=="__main__":
         xy = []
         predict_pose_list = []
         predict_pose_list.append(start_traj_point_np)
+        noisy_a = np.random.normal(0, 0.5, 2)
         while not done:
             step_num += 1
             total_step_num += 1
             if total_step_num <= parking_agent.configs.memory_size and not parking_agent.executing_rs:
                 if step_num % 5 == 1:
                     macro = parking_agent.sample_action_with_mask(sample_mask)
-                action = macro
+                action = np.clip(macro, -0.9, 0.9)
                 log_prob = 0.0
             else:
-                action, log_prob = parking_agent.get_action(obs, predict_pose_list)
+                action_raw, log_prob = parking_agent.get_action(obs, predict_pose_list)
+                if step_num % 5 == 1:
+                    noisy_a = np.random.normal(0, 0.5, 2)
+                action = np.clip(action_raw + noisy_a, -0.9, 0.9)
 
             next_obs, reward, done, info = env.step(action)
             sample_mask = next_obs['action_mask']
@@ -357,6 +413,13 @@ if __name__=="__main__":
                     scene_chooser.update_success_record(0)
                     if scene_chosen == 'dlp':
                         dlp_case_chooser.update_success_record(0, case_id)
+
+        if total_step_num > parking_agent.configs.memory_size:
+            phase = total_step_num % BURN_PERIOD
+            if phase < BURN_ON_STEPS:
+                run_flag.set()    # 开启 burn
+            else:
+                run_flag.clear()  # 暂停 burn
 
         if total_step_num%1000==0 and ((not parking_agent.distributed) or rank == 0):     
             writer.add_scalar("total_reward", total_reward, i)

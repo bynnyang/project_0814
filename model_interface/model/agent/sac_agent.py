@@ -213,10 +213,10 @@ class SACConfig(ConfigBase):
         self.adam_epsilon = 1e-8
         self.dist_type = "gaussian"
         self.hidden_size = 256
-        self.memory_size = 10240
-        self.batch_size = 256
+        self.memory_size = 50000
+        self.batch_size = 64
         # self.mini_batch_size = 32
-        self.mini_epoch = 2
+        self.mini_epoch = 1
         self.initial_temperature = 0.01
         self.action_dim = 2
         self.target_entropy = self.action_dim * 0.5
