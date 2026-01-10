@@ -207,7 +207,8 @@ if __name__=="__main__":
     if dist.is_available() and dist.is_initialized():
         dist.barrier()
     device, distributed, rank, world_size = setup_distributed()
-    gpu_reserver = reserve_gpu_memory(device, reserve_mb=25000)
+    torch.cuda.set_device(0)
+    gpu_reserver = reserve_gpu_memory(device, reserve_mb=20000)
     writer = SummaryWriter(save_path) if rank == 0 else None
     if dist.is_available() and dist.is_initialized():
         if dist.get_rank() == 0:
@@ -289,15 +290,15 @@ if __name__=="__main__":
     ).reshape(4,)   # [T,4]
 
     parking_agent.agent.set_start_traj_point(start_traj_point_np)
-    stop_flag = threading.Event()   # 控制“彻底退出”
-    run_flag  = threading.Event()   # 控制“是否运行”
-    run_flag.set()                  # 默认启动就运行
-    t = threading.Thread(target=gpu_burn, args=(stop_flag, run_flag), daemon=True)
-    t.start()
-    # ====== burn 调度参数 ======
-    BURN_ON_STEPS  = 4000   # 开启持续多少 step
-    BURN_OFF_STEPS = 6000   # 暂停持续多少 step
-    BURN_PERIOD    = BURN_ON_STEPS + BURN_OFF_STEPS
+    # stop_flag = threading.Event()   # 控制“彻底退出”
+    # run_flag  = threading.Event()   # 控制“是否运行”
+    # run_flag.set()                  # 默认启动就运行
+    # t = threading.Thread(target=gpu_burn, args=(stop_flag, run_flag), daemon=True)
+    # t.start()
+    # # ====== burn 调度参数 ======
+    # BURN_ON_STEPS  = 4000   # 开启持续多少 step
+    # BURN_OFF_STEPS = 6000   # 暂停持续多少 step
+    # BURN_PERIOD    = BURN_ON_STEPS + BURN_OFF_STEPS
     # t = threading.Thread(target=gpu_burn, daemon=True)
     # t.start()
 
@@ -351,7 +352,7 @@ if __name__=="__main__":
                 predict_pose_list.clear()
                 predict_pose_list.append(start_traj_point_np)
             # obs = next_obs
-            if total_step_num > parking_agent.configs.memory_size and total_step_num%256==0:
+            if total_step_num > parking_agent.configs.memory_size and total_step_num%10==0:
                 actor_loss, critic_loss = parking_agent.update(total_step_num)
                 if total_step_num%1000==0 and (rank == 0):
                     writer.add_scalar("actor_loss", actor_loss, i)
@@ -414,12 +415,12 @@ if __name__=="__main__":
                     if scene_chosen == 'dlp':
                         dlp_case_chooser.update_success_record(0, case_id)
 
-        if total_step_num > parking_agent.configs.memory_size:
-            phase = total_step_num % BURN_PERIOD
-            if phase < BURN_ON_STEPS:
-                run_flag.set()    # 开启 burn
-            else:
-                run_flag.clear()  # 暂停 burn
+        # if total_step_num > parking_agent.configs.memory_size:
+        #     phase = total_step_num % BURN_PERIOD
+        #     if phase < BURN_ON_STEPS:
+        #         run_flag.set()    # 开启 burn
+        #     else:
+        #         run_flag.clear()  # 暂停 burn
 
         if total_step_num%1000==0 and ((not parking_agent.distributed) or rank == 0):     
             writer.add_scalar("total_reward", total_reward, i)
