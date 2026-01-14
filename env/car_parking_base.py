@@ -144,10 +144,12 @@ class CarParking(gym.Env):
         self.prev_reward = 0.0
         self.accum_arrive_reward = 0.0
         self.t = 0.0
-        self._gear_shift_seen = False
         self._risk_prev_d = None
         self._risk_in_zone = None
         self._stuck_steps = 0
+        for k in ["_gear_shift_seen", "_last_shift_xy", "_last_shift_step"]:
+            if hasattr(self, k):
+                delattr(self, k)
 
         if level is not None:
             self.set_level(level)
@@ -188,6 +190,24 @@ class CarParking(gym.Env):
         if self._check_time_exceeded():
             return Status.OUTTIME
         return Status.CONTINUE
+    
+    def lateral_longitudinal_error(
+        self,
+        car_xy,        # (x_c, y_c)
+        slot_xy,       # (x_s, y_s)
+        slot_yaw       # theta_s (rad)
+    ):
+        dx = car_xy[0] - slot_xy[0]
+        dy = car_xy[1] - slot_xy[1]
+
+        # 车位坐标系
+        e_parallel = np.array([np.cos(slot_yaw), np.sin(slot_yaw)])
+        e_perp     = np.array([-np.sin(slot_yaw), np.cos(slot_yaw)])
+
+        d_lon = dx * e_parallel[0] + dy * e_parallel[1]
+        d_lat = dx * e_perp[0]     + dy * e_perp[1]
+
+        return d_lat, d_lon
 
     def _get_reward(self, prev_state: State, curr_state: State, lidar_dist: List):
 
@@ -220,16 +240,16 @@ class CarParking(gym.Env):
         dist_reward = prev_dist_diff/dist_norm_ratio - dist_diff/dist_norm_ratio
         angle_reward = prev_angle_diff/angle_norm_ratio - angle_diff/angle_norm_ratio
 
-        abs_dist_pen = -0.05 * (dist_diff / dist_norm_ratio)
-        abs_ang_pen  = -0.02 * (angle_diff  / angle_norm_ratio)
-
+        # abs_dist_pen = -0.05 * (dist_diff / dist_norm_ratio)
+        # abs_ang_pen  = -0.02 * (angle_diff  / angle_norm_ratio)
+        d_lat, _ = self.lateral_longitudinal_error((curr_state.loc.x, curr_state.loc.y),
+                                                (self.map.dest.loc.x, self.map.dest.loc.y), self.map.dest.heading)
 
         near_bonus = 0.0
-        # 你可以按场景调阈值（先保守一点）
-        if dist_diff < 10.0 and angle_diff < (60.0 * math.pi / 180.0):
-            near_bonus += 0.02
-        if dist_diff < 5.0 and angle_diff < (20.0 * math.pi / 180.0):
-            near_bonus += 0.03
+        if dist_diff < 5.0 and angle_diff < (40.0 * math.pi / 180.0) and abs(d_lat)<1.0:
+            near_bonus += 0.04
+        if dist_diff < 3.0 and angle_diff < (20.0 * math.pi / 180.0) and abs(d_lat)<1.0:
+            near_bonus += 0.06
         
         # Box union reward
         vehicle_box = Polygon(self.vehicle.box)
@@ -250,21 +270,54 @@ class CarParking(gym.Env):
         prev_gear = gear_sign(prev_state.speed)
         curr_gear = gear_sign(curr_state.speed)
 
+        effective_prev_gear = prev_gear
+        effective_curr_gear = curr_gear if curr_gear != 0 else prev_gear
+
+        shifted = (effective_prev_gear != 0 and effective_curr_gear != 0 and effective_prev_gear != effective_curr_gear)
+
         # lazy init counter/flag
         if not hasattr(self, "_gear_shift_seen"):
             self._gear_shift_seen = False  # whether we have already counted the first shift
 
+        if not hasattr(self, "_last_shift_xy"):
+            self._last_shift_xy = None  # (x, y)
+
+        # base penalty (first shift can be free if you want)
+        BASE_SHIFT_PEN = 0.25   # 每次换挡基础惩罚：0.2~0.6 之间调
+        FIRST_FREE = True
+
+        # "near last shift point" heavy penalty
+        NEAR_SHIFT_DIST = 1.0   # 两次换挡点距离阈值（米）：0.25~0.6 之间调
+        HEAVY_PEN = 10.0          # 重罚强度：0.5~1.5 之间调
+        MIN_STEP_GAP = 3         # 防止同一步/极短步误触：>=2~5
+
+
         gear_reward = 0
         # count shift only when both gears are valid and sign changes
-        if prev_gear != 0 and curr_gear != 0 and prev_gear != curr_gear:
-            if self._gear_shift_seen:
-                gear_reward = -0.1
-            else:
-                # first shift is free
+        if shifted:
+              # 1) base penalty
+            if FIRST_FREE and (not self._gear_shift_seen):
                 self._gear_shift_seen = True
-        # low_speed = 0.0
-        # if abs(curr_state.speed) < 0.3:
-        #     low_speed = -0.2
+                gear_reward += 0.0
+            else:
+                gear_reward += -BASE_SHIFT_PEN
+
+            # 2) heavy penalty if shift happens near last shift point
+            curr_xy = (curr_state.loc.x, curr_state.loc.y)
+            if self._last_shift_xy is not None:
+                dx = curr_xy[0] - self._last_shift_xy[0]
+                dy = curr_xy[1] - self._last_shift_xy[1]
+                dist_from_last_shift = math.hypot(dx, dy)
+
+                # only apply heavy penalty if not too close in time (avoid double count jitter)
+                if dist_from_last_shift < NEAR_SHIFT_DIST:
+                    # stronger when closer: (near -> heavier)
+                    # ratio in [0,1], 1 means exactly same point
+                    ratio = 1.0 - (dist_from_last_shift / NEAR_SHIFT_DIST)
+                    gear_reward += -HEAVY_PEN * ratio
+
+            # update last shift record
+            self._last_shift_xy = curr_xy
         '''
         增加靠近障碍物的惩罚和远离障碍物的奖励
         1、首先是没有进入车位， 没有发生面积的overlap， union_area = vehicle_box.intersection(dest_box).area = 0
@@ -277,7 +330,6 @@ class CarParking(gym.Env):
          # ==============================
         # Encourage gear shift near wall (optional, set to 0 to disable)
         # ==============================
-        SHIFT_GEAR_BONUS = 0.10  # set 0 to disable
 
         front_distance = np.concatenate([lidar_dist[0:5], lidar_dist[114:120]])
         rear_distance = np.array(lidar_dist[42:77])
@@ -285,23 +337,19 @@ class CarParking(gym.Env):
         min_front_distance = float(front_distance.min())
         min_rear_distance  = float(rear_distance.min())
 
-        effective_gear = curr_gear if curr_gear != 0 else prev_gear
-        if effective_gear == 1:
+        if effective_curr_gear == 1:
             danger_d = min_front_distance
-        elif effective_gear == -1:
+        elif effective_curr_gear == -1:
             danger_d = min_rear_distance
         else:
             danger_d = None
 
         in_shift_zone = (danger_d is not None and danger_d < 0.5)
 
-        # shift event
-        shifted = (prev_gear != 0 and curr_gear != 0 and prev_gear != curr_gear)
-
         if in_shift_zone and shifted:
             # cancel any shift penalty and optionally add bonus
             gear_reward = 0.0
-            gear_reward += SHIFT_GEAR_BONUS
+            gear_reward += BASE_SHIFT_PEN
 
 
         # ==============================
@@ -337,7 +385,7 @@ class CarParking(gym.Env):
         effective_gear = curr_gear if curr_gear != 0 else prev_gear
 
         # Only before entering slot (no overlap)
-        if union_area <= 1e-9:
+        if union_area <= 1e-9 and (angle_diff  / angle_norm_ratio) < 0.5:
 
             # select risk distance direction
             if effective_gear == 1:      # D -> front
@@ -432,10 +480,10 @@ class CarParking(gym.Env):
             # linearly increasing penalty to strongly break loops
             stuck_pen = -STUCK_K * (self._stuck_steps - STUCK_START + 1)
 
-        return [time_cost, rs_dist_reward, dist_reward, angle_reward, box_union_reward, gear_reward,  abs_dist_pen + abs_ang_pen, near_bonus, stuck_pen, risk_reward]
+        return [time_cost, rs_dist_reward, dist_reward, angle_reward, box_union_reward, gear_reward, near_bonus, stuck_pen, risk_reward]
         
     def get_reward(self, status, prev_state, observation):
-        reward_info = [0,0,0,0,0,0,0,0,0,0]
+        reward_info = [0,0,0,0,0,0,0,0,0]
         lidar_dist = observation['lidar'] * LIDARRANGE
         if status == Status.CONTINUE:
             reward_info = self._get_reward(prev_state, self.vehicle.state, lidar_dist)
@@ -498,10 +546,9 @@ class CarParking(gym.Env):
             'angle_reward':reward_list[3],\
             'box_union_reward':reward_list[4],
             'gear_shift_reward':reward_list[5],
-            'abs_shape':reward_list[6],
-            'near_bonus':reward_list[7],
-            'low_speed':reward_list[8],
-            'risk_reward':reward_list[9]})
+            'near_bonus':reward_list[6],
+            'low_speed':reward_list[7],
+            'risk_reward':reward_list[8]})
 
         info = OrderedDict({'reward_info':reward_info,
             'path_to_dest':None})

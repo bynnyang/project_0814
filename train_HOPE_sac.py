@@ -208,7 +208,7 @@ if __name__=="__main__":
         dist.barrier()
     device, distributed, rank, world_size = setup_distributed()
     torch.cuda.set_device(0)
-    gpu_reserver = reserve_gpu_memory(device, reserve_mb=20000)
+    # gpu_reserver = reserve_gpu_memory(device, reserve_mb=20000)
     writer = SummaryWriter(save_path) if rank == 0 else None
     if dist.is_available() and dist.is_initialized():
         if dist.get_rank() == 0:
@@ -324,16 +324,19 @@ if __name__=="__main__":
             step_num += 1
             total_step_num += 1
             if total_step_num <= parking_agent.configs.memory_size and not parking_agent.executing_rs:
-                if step_num % 5 == 1:
+                if step_num % 7 == 1:
                     macro = parking_agent.sample_action_with_mask(sample_mask)
                 action = np.clip(macro, -0.9, 0.9)
                 log_prob = 0.0
             else:
                 action_raw, log_prob = parking_agent.get_action(obs, predict_pose_list)
-                if step_num % 5 == 1:
-                    noisy_a = np.random.normal(0, 0.5, 2)
-                action = np.clip(action_raw + noisy_a, -0.9, 0.9)
-
+                if not parking_agent.executing_rs:
+                    # if step_num % 5 == 1:
+                    #     noisy_a = np.random.normal(0, 0.5, 2)
+                    # action = np.clip(action_raw + noisy_a, -0.9, 0.9)
+                    action = np.clip(action_raw, -0.9, 0.9)
+                else:
+                    action = action_raw
             next_obs, reward, done, info = env.step(action)
             sample_mask = next_obs['action_mask']
             reward_info.append(list(info['reward_info'].values()))

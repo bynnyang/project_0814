@@ -115,11 +115,10 @@ REWARD_RATIO = 0.1
 from typing import OrderedDict
 REWARD_WEIGHT = OrderedDict({'time_cost':1,\
             'rs_dist_reward':0,\
-            'dist_reward':15,\
-            'angle_reward':8,\
-            'box_union_reward':6,
+            'dist_reward':5,\
+            'angle_reward':5,\
+            'box_union_reward':10,
             'gear_shift_reward':8.0,
-            'abs_shape':1.0,
             'near_bonus':1.0,
             'low_speed':8.0,
             'risk_reward':8.0})
@@ -214,7 +213,7 @@ TRAJ_POINT_COLOR       = (0, 160, 0)   # 深绿：轨迹中心线点
 TRAJ_BOX_COLOR         = (0, 200, 0)   # 亮绿：缩小小车 box
 
 RS_MAX_DIST = 15
-TOLERANT_TIME = 300
+TOLERANT_TIME = 200
 
 TRAJXRANGE = 10.0
 TRAJYRANGE = 10.0

@@ -90,7 +90,7 @@ def generate_bay_parking_case(map_level, rng):
     non_critical_vehicle = []
     # generate obstacle on left
     # the obstacle can be another vehicle or just a simple obstacle
-    if rng.random()<prob_huge_obst: # generate simple obstacle
+    if False and rng.random()<prob_huge_obst: # generate simple obstacle
         max_dist_to_obst = max_lateral_space/5*4
         min_dist_to_obst = max_lateral_space/5*1
         left_obst_rf = get_rand_pos(rng, *car_lf, pi*11/12, pi*13/12, min_dist_to_obst, max_dist_to_obst)  # 以一个范围的极坐标系去生成随机点
@@ -175,10 +175,10 @@ def generate_bay_parking_case(map_level, rng):
         if map_level == 'Complex':
             right_obst_lf_point = get_rand_pos(rng, *car_rf, -pi/12, pi/12, min_dist_to_obst, max_dist_to_obst)
             right_wall = LinearRing(( 
-                (right_obst_lf_point[0]+1.5, right_obst_lf_point[1]+bay_PARK_WALL_DIST),
-                (right_obst_lf_point[0]+1.5, right_obst_lf_point[1]+0.5), 
-                (right_obst_lf_point[0]+0.5, right_obst_lf_point[1]+0.5),
-                (right_obst_lf_point[0] + 0.5, right_obst_lf_point[1] + bay_PARK_WALL_DIST)))
+                (right_obst_lf_point[0]+5.5, right_obst_lf_point[1]+bay_PARK_WALL_DIST),
+                (right_obst_lf_point[0]+5.5, right_obst_lf_point[1]+0.5), 
+                (right_obst_lf_point[0]+4.5, right_obst_lf_point[1]+0.5),
+                (right_obst_lf_point[0] + 4.5, right_obst_lf_point[1] + bay_PARK_WALL_DIST)))
         else:
             right_wall = None
         if right_wall !=None:

@@ -213,7 +213,7 @@ class SACConfig(ConfigBase):
         self.adam_epsilon = 1e-8
         self.dist_type = "gaussian"
         self.hidden_size = 256
-        self.memory_size = 50000
+        self.memory_size = 35000
         self.batch_size = 64
         # self.mini_batch_size = 32
         self.mini_epoch = 1
@@ -577,6 +577,24 @@ class SACAgent(AgentBase):
         if self.configs.state_norm:
             obs2 = self.state_normalize.state_norm(obs2)
             next_obs2 = self.state_normalize.state_norm(next_obs2, update=True)
+
+        #     # ====== schema 校验：保证 obs/next_obs key 一致 ======
+        # REQUIRED_KEYS = ("target", "action_mask", "image", "lidar", "park_target_point")  # 你至少需要这两个；按你 obs2tensor 需求补齐
+        # # 如果你 obs2tensor 里还有别的 key（比如 'state','bev','lidar'...），也加进来
+
+        # def _check_obs_schema(o, name: str):
+        #     missing = [k for k in REQUIRED_KEYS if k not in o]
+        #     if missing:
+        #         # 打印足够的信息定位是哪种场景的数据
+        #         keys = list(o.keys())
+        #         raise KeyError(
+        #             f"[MEM] {name} missing keys={missing}. "
+        #             f"available_keys={keys}. "
+        #             f"done={done2}, seg_done={seg_done2}, reward={reward2}"
+        #         )
+
+        # _check_obs_schema(obs2, "obs")
+        # _check_obs_schema(next_obs2, "next_obs")
 
         self.memory.push((obs2, action2, reward2, done2, log_prob2, next_obs2, pose_seq_cpu, seg_done2))
 
@@ -1077,13 +1095,14 @@ class SACAgent(AgentBase):
 
                     # (c) Tensor：copy_
                     elif torch.is_tensor(item):
-                        t = ckpt_val.to(self.device)
-                        if item.shape != t.shape:
-                            raise RuntimeError(
-                                f"[load][ERR] {name} shape mismatch: "
-                                f"tensor {tuple(item.shape)} vs ckpt {tuple(t.shape)}"
-                            )
-                        item.copy_(t)
+                        with torch.no_grad():
+                            t = ckpt_val.to(self.device)
+                            if item.shape != t.shape:
+                                raise RuntimeError(
+                                    f"[load][ERR] {name} shape mismatch: "
+                                    f"tensor {tuple(item.shape)} vs ckpt {tuple(t.shape)}"
+                                )
+                            item.copy_(t)
 
                     else:
                         # 兜底
