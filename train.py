@@ -29,14 +29,14 @@ from inference import test_main
 decay_lr_factor = 0.3
 decay_lr_every = 10
 lr = 0.0001
-epochs = 1000
+epochs = 2000
 end_epoch = 0
 lr = 0.0001
 show_every = 100
 val_every = 5
 best_minade = float('inf')
 save_dir = './trained_params'
-date_record = "251209"
+date_record = "260115"
 global_step = 0
 
 import warnings
