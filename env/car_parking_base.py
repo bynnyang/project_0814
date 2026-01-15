@@ -65,7 +65,7 @@ class CarParking(gym.Env):
         self.use_lidar_observation = use_lidar_observation
         self.use_img_observation = use_img_observation
         self.use_action_mask = use_action_mask
-        self.render_mode = "rgb_array" if render_mode is None else render_mode
+        self.render_mode = "human" if render_mode is None else render_mode
         self.fps = fps
         self.screen: Optional[pygame.Surface] = None
         self.clock = None
@@ -147,7 +147,7 @@ class CarParking(gym.Env):
         self._risk_prev_d = None
         self._risk_in_zone = None
         self._stuck_steps = 0
-        for k in ["_gear_shift_seen", "_last_shift_xy", "_last_shift_step"]:
+        for k in ["_gear_shift_count","_gear_heavy_tail","_gear_shift_seen", "_last_shift_xy", "_last_shift_step"]:
             if hasattr(self, k):
                 delattr(self, k)
 
@@ -275,6 +275,12 @@ class CarParking(gym.Env):
 
         shifted = (effective_prev_gear != 0 and effective_curr_gear != 0 and effective_prev_gear != effective_curr_gear)
 
+        
+        if not hasattr(self, "_gear_shift_count"):
+            self._gear_shift_count = 0
+        # "heavy tail" penalty counter: once triggered, penalize next N steps
+        if not hasattr(self, "_gear_heavy_tail"):
+            self._gear_heavy_tail = 0
         # lazy init counter/flag
         if not hasattr(self, "_gear_shift_seen"):
             self._gear_shift_seen = False  # whether we have already counted the first shift
@@ -284,23 +290,37 @@ class CarParking(gym.Env):
 
         # base penalty (first shift can be free if you want)
         BASE_SHIFT_PEN = 0.25   # 每次换挡基础惩罚：0.2~0.6 之间调
+        SHIFT_PEN_HEAVY = 0.60 
         FIRST_FREE = True
 
         # "near last shift point" heavy penalty
         NEAR_SHIFT_DIST = 1.0   # 两次换挡点距离阈值（米）：0.25~0.6 之间调
         HEAVY_PEN = 10.0          # 重罚强度：0.5~1.5 之间调
         MIN_STEP_GAP = 3         # 防止同一步/极短步误触：>=2~5
+        HEAVY_TAIL_STEPS = 12           # 之后的路径（后续步数）也要罚
+        HEAVY_TAIL_PEN = 0.6           # 每步持续罚（后续路径重罚）
+        FREE_SHIFTS = 5
 
 
         gear_reward = 0
         # count shift only when both gears are valid and sign changes
+
+        if self._gear_heavy_tail > 0:
+            gear_reward += -HEAVY_TAIL_PEN
+            self._gear_heavy_tail -= 1
         if shifted:
               # 1) base penalty
             if FIRST_FREE and (not self._gear_shift_seen):
                 self._gear_shift_seen = True
                 gear_reward += 0.0
-            else:
+            elif self._gear_shift_count <= FREE_SHIFTS:
                 gear_reward += -BASE_SHIFT_PEN
+            else:
+                 # over 4 shifts: heavy instant penalty
+                gear_reward += -SHIFT_PEN_HEAVY
+                # and heavy tail: penalize following steps (path)
+                self._gear_heavy_tail = max(self._gear_heavy_tail, HEAVY_TAIL_STEPS)
+
 
             # 2) heavy penalty if shift happens near last shift point
             curr_xy = (curr_state.loc.x, curr_state.loc.y)
