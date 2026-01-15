@@ -240,8 +240,8 @@ class CarParking(gym.Env):
         dist_reward = prev_dist_diff/dist_norm_ratio - dist_diff/dist_norm_ratio
         angle_reward = prev_angle_diff/angle_norm_ratio - angle_diff/angle_norm_ratio
 
-        # abs_dist_pen = -0.05 * (dist_diff / dist_norm_ratio)
-        # abs_ang_pen  = -0.02 * (angle_diff  / angle_norm_ratio)
+        abs_dist_pen = -0.05 * (dist_diff / dist_norm_ratio)
+        abs_ang_pen  = -0.02 * (angle_diff  / angle_norm_ratio)
         d_lat, _ = self.lateral_longitudinal_error((curr_state.loc.x, curr_state.loc.y),
                                                 (self.map.dest.loc.x, self.map.dest.loc.y), self.map.dest.heading)
 
@@ -500,10 +500,10 @@ class CarParking(gym.Env):
             # linearly increasing penalty to strongly break loops
             stuck_pen = -STUCK_K * (self._stuck_steps - STUCK_START + 1)
 
-        return [time_cost, rs_dist_reward, dist_reward, angle_reward, box_union_reward, gear_reward, near_bonus, stuck_pen, risk_reward]
+        return [time_cost, rs_dist_reward, dist_reward, angle_reward, box_union_reward, gear_reward, abs_dist_pen + abs_ang_pen, near_bonus, stuck_pen, risk_reward]
         
     def get_reward(self, status, prev_state, observation):
-        reward_info = [0,0,0,0,0,0,0,0,0]
+        reward_info = [0,0,0,0,0,0,0,0,0,0]
         lidar_dist = observation['lidar'] * LIDARRANGE
         if status == Status.CONTINUE:
             reward_info = self._get_reward(prev_state, self.vehicle.state, lidar_dist)
@@ -566,9 +566,10 @@ class CarParking(gym.Env):
             'angle_reward':reward_list[3],\
             'box_union_reward':reward_list[4],
             'gear_shift_reward':reward_list[5],
-            'near_bonus':reward_list[6],
-            'low_speed':reward_list[7],
-            'risk_reward':reward_list[8]})
+            'abs_shape':reward_list[6],
+            'near_bonus':reward_list[7],
+            'low_speed':reward_list[8],
+            'risk_reward':reward_list[9]})
 
         info = OrderedDict({'reward_info':reward_info,
             'path_to_dest':None})

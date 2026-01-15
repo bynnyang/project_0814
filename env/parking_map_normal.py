@@ -235,6 +235,7 @@ def generate_bay_parking_case(map_level, rng):
     while not start_box_valid:
         start_box_valid = True
         start_x = random_uniform_num(rng, *valid_start_x_range)
+        start_x = -3.0
         start_y = random_uniform_num(rng, *valid_start_y_range)
         start_yaw = random_gaussian_num(rng, 0, pi/6, -pi/2+1e-6, pi/2-1e-6)  
         start_yaw = 0
