@@ -506,16 +506,16 @@ if __name__=="__main__":
         #     f.clear()
 
     
-        if (i+1) % 1000 == 0 and ((not parking_agent.distributed) or rank == 0):
+        if (i+1) % 1== 0 and ((not parking_agent.distributed) or rank == 0):
             eval_episode = args.eval_episode
             choose_action = True
             with torch.no_grad():
                 # eval on dlp
-                # env.set_level('dlp')
-                # log_path = save_path+'/dlp'
-                # if not os.path.exists(log_path):
-                #     os.makedirs(log_path)
-                # eval(env, parking_agent, episode=eval_episode, log_path=log_path, post_proc_action=choose_action)
+                env.set_level('dlp')
+                log_path = save_path+'/dlp'
+                if not os.path.exists(log_path):
+                    os.makedirs(log_path)
+                eval(env, parking_agent, episode=eval_episode, log_path=log_path, post_proc_action=choose_action)
                 
                 # # eval on extreme
                 # env.set_level('Extrem')

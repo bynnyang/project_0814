@@ -25,7 +25,7 @@ if __name__=="__main__":
 
 
     parser = argparse.ArgumentParser()
-    parser.add_argument('--ckpt_path', type=str, default='./rl_model/PPO_best.pt') # './model/ckpt/HOPE_SAC0.pt'
+    parser.add_argument('--ckpt_path', type=str, default='./rl_model/SAC2_1999.pt') # './model/ckpt/HOPE_SAC0.pt'
     parser.add_argument('--eval_episode', type=int, default=2000)
     parser.add_argument('--verbose', type=bool, default=True)
     parser.add_argument('--visualize', type=bool, default=True)
@@ -89,6 +89,7 @@ if __name__=="__main__":
 
     eval_episode = args.eval_episode
     choose_action = True if isinstance(rl_agent, PPO) else False
+    choose_action = True
     with torch.no_grad():
         # eval on extreme
         # env.set_level('Extrem')
@@ -111,11 +112,11 @@ if __name__=="__main__":
             os.makedirs(log_path)
         eval(env, parking_agent, episode=eval_episode, log_path=log_path, post_proc_action=choose_action)
         
-        # eval on normalize
-        env.set_level('Normal')
-        log_path = save_path+'/normalize'
-        if not os.path.exists(log_path):
-            os.makedirs(log_path)
-        eval(env, parking_agent, episode=eval_episode, log_path=log_path, post_proc_action=choose_action)
+        # # eval on normalize
+        # env.set_level('Normal')
+        # log_path = save_path+'/normalize'
+        # if not os.path.exists(log_path):
+        #     os.makedirs(log_path)
+        # eval(env, parking_agent, episode=eval_episode, log_path=log_path, post_proc_action=choose_action)
 
     env.close()

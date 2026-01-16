@@ -18,7 +18,7 @@ REAR_HANG = 0.704  # rear hang length
 LENGTH = WHEEL_BASE+FRONT_HANG+REAR_HANG
 WIDTH = 1.781  # width
 STEP_TIME_AND_LENGHT = 0.2
-MASK_STEP_TIME = 0.6
+MASK_STEP_TIME = 0.2
 
 from shapely.geometry import LinearRing
 VehicleBox = LinearRing([
@@ -27,7 +27,7 @@ VehicleBox = LinearRing([
     (FRONT_HANG + WHEEL_BASE,  WIDTH/2),
     (-REAR_HANG,  WIDTH/2)])
 
-VALID_SPEED = [-1.2, 1.2]
+VALID_SPEED = [-2.5, 2.5]
 VALID_STEER = [-0.62, 0.62]
 
 NUM_STEP = 1 #这个记得改为匹配模型的0.2s  也就是NUM_STEP = 4
