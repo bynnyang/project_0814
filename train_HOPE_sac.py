@@ -323,7 +323,7 @@ if __name__=="__main__":
         while not done:
             step_num += 1
             total_step_num += 1
-            if False and total_step_num <= parking_agent.configs.memory_size and not parking_agent.executing_rs:
+            if total_step_num <= parking_agent.configs.memory_size and not parking_agent.executing_rs:
                 if step_num % 7 == 1:
                     macro = parking_agent.sample_action_with_mask(sample_mask)
                 action = np.clip(macro, -0.9, 0.9)
@@ -456,7 +456,7 @@ if __name__=="__main__":
             print("alpha: ", parking_agent.alpha.detach().cpu().numpy().reshape(-1))
             print("episode:%s  average reward:%s"%(i,np.mean(reward_list[-50:])))
             print(np.mean(parking_agent.actor_loss_list[-100:]),np.mean(parking_agent.critic_loss_list[-100:]))
-            print('time_cost ,rs_dist_reward ,dist_reward ,angle_reward ,box_union_reward ,gear_shift_reward ,abs_shape ,near_bonus, low_speed, risk_reward')
+            print('time_cost ,rs_dist_reward ,dist_reward ,angle_reward ,box_union_reward ,gear_shift_reward ,abs_shape ,near_bonus, low_speed, risk_reward, high_speed, big_steer')
             for j in range(10):
                 print(case_id_list[-(10-j)],reward_list[-(10-j)],reward_info_list[-(10-j)])
             print("")

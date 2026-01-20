@@ -65,7 +65,7 @@ class CarParking(gym.Env):
         self.use_lidar_observation = use_lidar_observation
         self.use_img_observation = use_img_observation
         self.use_action_mask = use_action_mask
-        self.render_mode = "human" if render_mode is None else render_mode
+        self.render_mode = "rgb_array" if render_mode is None else render_mode
         self.fps = fps
         self.screen: Optional[pygame.Surface] = None
         self.clock = None
@@ -296,16 +296,16 @@ class CarParking(gym.Env):
             self._last_shift_xy = None  # (x, y)
 
         # base penalty (first shift can be free if you want)
-        BASE_SHIFT_PEN = 0.25   # 每次换挡基础惩罚：0.2~0.6 之间调
-        SHIFT_PEN_HEAVY = 0.60 
+        BASE_SHIFT_PEN = 0.1   # 每次换挡基础惩罚：0.2~0.6 之间调
+        SHIFT_PEN_HEAVY = 0.2 
         FIRST_FREE = True
 
         # "near last shift point" heavy penalty
         NEAR_SHIFT_DIST = 1.0   # 两次换挡点距离阈值（米）：0.25~0.6 之间调
-        HEAVY_PEN = 10.0          # 重罚强度：0.5~1.5 之间调
+        HEAVY_PEN = 0.5          # 重罚强度：0.5~1.5 之间调
         MIN_STEP_GAP = 3         # 防止同一步/极短步误触：>=2~5
-        HEAVY_TAIL_STEPS = 12           # 之后的路径（后续步数）也要罚
-        HEAVY_TAIL_PEN = 0.6           # 每步持续罚（后续路径重罚）
+        HEAVY_TAIL_STEPS = 10           # 之后的路径（后续步数）也要罚
+        HEAVY_TAIL_PEN = 0.02           # 每步持续罚（后续路径重罚）
         FREE_SHIFTS = 6
 
 
@@ -510,10 +510,11 @@ class CarParking(gym.Env):
         high_speed = 0.0
         v = curr_state.speed
         v_th = 1.0
-        w_v = 10.0
+        w_v = 5.0
         v_excess = abs(v) - v_th
         v_pen = self._soft_hinge(v_excess, sharpness=10.0)      # >=0
         high_speed -= w_v * (v_pen ** 2)                       # 二次惩罚：越大惩罚增长更快
+        high_speed = max(high_speed, -5.0)
 
 
         big_steer = 0.0
@@ -595,7 +596,9 @@ class CarParking(gym.Env):
             'abs_shape':reward_list[6],
             'near_bonus':reward_list[7],
             'low_speed':reward_list[8],
-            'risk_reward':reward_list[9]})
+            'risk_reward':reward_list[9],
+            'high_speed':reward_list[10],
+            'big_steer':reward_list[11]})
 
         info = OrderedDict({'reward_info':reward_info,
             'path_to_dest':None})

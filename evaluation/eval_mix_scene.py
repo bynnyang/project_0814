@@ -98,12 +98,12 @@ if __name__=="__main__":
         #     os.makedirs(log_path)
         # eval(env, parking_agent, episode=eval_episode, log_path=log_path, post_proc_action=choose_action)
 
-        # eval on dlp
-        env.set_level('dlp')
-        log_path = save_path+'/dlp'
-        if not os.path.exists(log_path):
-            os.makedirs(log_path)
-        eval(env, parking_agent, episode=eval_episode, log_path=log_path, multi_level=True, post_proc_action=choose_action)
+        # # eval on dlp
+        # env.set_level('dlp')
+        # log_path = save_path+'/dlp'
+        # if not os.path.exists(log_path):
+        #     os.makedirs(log_path)
+        # eval(env, parking_agent, episode=eval_episode, log_path=log_path, multi_level=True, post_proc_action=choose_action)
         
         # eval on complex
         env.set_level('Complex')

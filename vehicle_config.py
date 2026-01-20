@@ -51,7 +51,7 @@ for i in np.arange(VALID_STEER[-1], -(VALID_STEER[-1] + VALID_STEER[-1]/PRECISIO
 N_DISCRETE_ACTION = len(discrete_actions)
 
 
-GAMMA = 0.98
+GAMMA = 0.992
 BATCH_SIZE = 2048
 LR = 5e-5 #LR = 5e-6
 TAU = 0.1
@@ -118,11 +118,13 @@ REWARD_WEIGHT = OrderedDict({'time_cost':1,\
             'dist_reward':15,\
             'angle_reward':20,\
             'box_union_reward':20,
-            'gear_shift_reward':8.0,
+            'gear_shift_reward':4.0,
             'abs_shape':5.0,
             'near_bonus':5.0,
             'low_speed':8.0,
-            'risk_reward':5.0})
+            'risk_reward':5.0,
+            'high_speed':1.0,
+            'big_steer':1.0})
 
 OUTBOUND_REWARD = -30
 OUTTIME_REWARD = -30
