@@ -334,7 +334,7 @@ if __name__=="__main__":
                     # if step_num % 5 == 1:
                     #     noisy_a = np.random.normal(0, 0.5, 2)
                     # action = np.clip(action_raw + noisy_a, -0.9, 0.9)
-                    action = np.clip(action_raw, -0.9, 0.9)
+                    action = np.clip(action_raw, -0.95, 0.95)
                 else:
                     action = action_raw
             next_obs, reward, done, info = env.step(action)

@@ -151,8 +151,8 @@ class SACBundle(nn.Module):
         self.actor_net = TrajectoryDecoderONNX(cfg)
 
         self.log_std = nn.Parameter(
-            torch.tensor([[-0.5, -0.5]], device=device),
-            requires_grad=True
+            torch.tensor([[-1.0, -1.0]], device=device),
+            requires_grad=False
         )
 
         # --- Q1 ---
@@ -220,9 +220,10 @@ class SACConfig(ConfigBase):
         self.initial_temperature = 0.01
         self.action_dim = 2
         self.target_entropy = self.action_dim * 0.0
+        self.kl_beta = 1.0
 
         # tricks
-        self.learn_temperature = True
+        self.learn_temperature = False
         self.state_norm = False
         self.reward_norm = False
         self.reward_scaling = False
@@ -382,7 +383,7 @@ class SACAgent(AgentBase):
         ], eps=self.configs.adam_epsilon)
 
         # alpha optimizer
-        self.log_alpha = torch.tensor(np.log(self.configs.initial_temperature), device=self.device, requires_grad=True)
+        self.log_alpha = torch.tensor(np.log(self.configs.initial_temperature), device=self.device, requires_grad=False)
         self.log_alpha_optimizer = torch.optim.Adam([self.log_alpha], lr=self.configs.lr_alpha, eps=self.configs.adam_epsilon)
 
     def _init_network(self, pretrain_ckpt_path=None):
@@ -409,6 +410,11 @@ class SACAgent(AgentBase):
         # 4) build optimizers
         self.build_optimizers()
 
+        self.teacher_bundle = deepcopy(self._unwrap(self.bundle)).to(self.device)
+        for p in self.teacher_bundle.parameters():
+            p.requires_grad = False
+        self.teacher_bundle.eval()
+
         # 5) checklist（保存/加载时 unwrap）
         self.check_list = [
             ("configs", self.configs, 0),
@@ -421,6 +427,20 @@ class SACAgent(AgentBase):
             ("log_alpha", self.log_alpha, 1),
             ("log_alpha_optimizer", self.log_alpha_optimizer, 1),
         ]
+
+
+    def _policy_kl_u_space(self, mu_new, logstd_new, mu_old, logstd_old):
+        """
+        KL( N_new || N_old )，逐维求和后取 batch mean
+        输入 shape: [B, action_dim]
+        """
+        std_new = torch.exp(logstd_new)
+        std_old = torch.exp(logstd_old)
+
+        # KL for diagonal Gaussians
+        kl_per_dim = (logstd_old - logstd_new) + (std_new.pow(2) + (mu_new - mu_old).pow(2)) / (2.0 * std_old.pow(2)) - 0.5
+        kl = kl_per_dim.sum(dim=-1).mean()
+        return kl
 
 
 
@@ -908,10 +928,27 @@ class SACAgent(AgentBase):
                                                                   b.q2_encoder, b.q2_point_encoder, b.q2_net):
                 # policy loss
                 action_, log_prob = self._get_action_and_log_prob(state_batch, tgt_train, len_curr, step)
+                b = self._unwrap(self.bundle)
+                encoder_out, point_out = b.encode_actor_obs(state_batch)
+                _, _, policy_dist = b.actor_net(encoder_out, point_out, tgt_train, len_curr)
+                mu_new = policy_dist
+                logstd_new = torch.clamp(b.log_std.expand_as(mu_new), -2.0, 0.0)
+                with torch.no_grad():
+                    tb = self.teacher_bundle  # already unwrapped & frozen
+                    enc_old = tb.actor_encoder(state_batch)
+                    pt_old  = tb.actor_point_encoder(state_batch["park_target_point"])
+                    _, _, policy_old = tb.actor_net(enc_old, pt_old, tgt_train, len_curr)
+                    mu_old = policy_old
+                    logstd_old = torch.clamp(tb.log_std.expand_as(mu_old), -2.0, 0.0)
+
+
 
                 q1_value = self._q1_forward(state_batch, action_, tgt_train, len_curr)
                 q2_value = self._q2_forward(state_batch, action_, tgt_train, len_curr)
-                actor_loss = (self.alpha.detach() * log_prob - torch.min(q1_value, q2_value)).mean()
+                sac_loss = (self.alpha.detach() * log_prob - torch.min(q1_value, q2_value)).mean()
+                kl = self._policy_kl_u_space(mu_new, logstd_new, mu_old, logstd_old)
+                actor_loss = sac_loss + self.configs.kl_beta * kl
+                # actor_loss = (self.alpha.detach() * log_prob - torch.min(q1_value, q2_value)).mean()
 
                 # update actor
                 self.actor_optimizer.zero_grad()
@@ -984,6 +1021,7 @@ class SACAgent(AgentBase):
                         "action_std_speed": action_[:,1].std().item(),
                         "action_mean_steer": action_[:,0].mean().item(),
                         "action_mean_speed": action_[:,1].mean().item(),
+                        "kl_pi_new_old": kl.detach().mean().item()
                     }
                     print("========== TRAIN LOG ==========")
                     for k, v in log.items():
