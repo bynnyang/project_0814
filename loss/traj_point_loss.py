@@ -171,13 +171,27 @@ class TrajPointLoss(nn.Module):
 
         global_next = global_traj[:, 1:, :]       # [B,T-1,4]
 
-        pos_loss_global = F.mse_loss(global_next[..., :2], gt_next[..., :2])
-        yaw_loss_global = F.mse_loss(global_next[..., 2:], gt_next[..., 2:])
+        T = global_next.shape[1]          # 轨迹长度
+        weights = torch.linspace(
+            1.0, 5.0, T,                  # 起点小，终点大
+            device=global_next.device
+        )  
+
+        # pos_loss_global = F.mse_loss(global_next[..., :2], gt_next[..., :2])
+        # yaw_loss_global = F.mse_loss(global_next[..., 2:], gt_next[..., 2:])
+        diff_pos = (global_next[..., :2] - gt_next[..., :2]) ** 2   # [B, T, 2]
+        diff_yaw = (global_next[..., 2:] - gt_next[..., 2:]) ** 2   # [B, T, *]
+        w = weights.view(1, T, 1)
+
+        pos_loss_global = (diff_pos * w).mean()
+        yaw_loss_global = (diff_yaw * w).mean()
         loss_global = pos_loss_global + self.lambda_yaw * yaw_loss_global
 
         # ========================
         # 3) 组合 loss
         # ========================
+        self.w_global = 1.0
+        self.w_local = 0.0
         total_loss = self.w_local * loss_local + self.w_global * loss_global
 
         log_dict = {

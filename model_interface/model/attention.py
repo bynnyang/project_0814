@@ -59,7 +59,7 @@ class FeedForward(nn.Module):
         return self.net(x)
 
 class Transformer(nn.Module):
-    def __init__(self, dim, depth, heads, dim_head, mlp_dim, dropout = 0.):
+    def __init__(self, dim, depth, heads, dim_head, mlp_dim, dropout = 0.01):
         super().__init__()
         self.layers = nn.ModuleList([])
         for _ in range(depth):
@@ -67,12 +67,12 @@ class Transformer(nn.Module):
                 PreNorm(dim, Attention(dim, heads = heads, dim_head = dim_head, dropout = dropout)),
                 PreNorm(dim, FeedForward(dim, mlp_dim, dropout = dropout))
             ]))
-        self.final_norm = nn.LayerNorm(dim)
+        # self.final_norm = nn.LayerNorm(dim)
     def forward(self, x):
         for attn, ff in self.layers:
             x = attn(x) + x
             x = ff(x) + x
-        return self.final_norm(x)
+        return x
     
 class AttentionNetwork(nn.Module):
     def __init__(self, dim, depth, heads, dim_head, mlp_dim, n_features, hidden_dim, output_dim):

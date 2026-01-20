@@ -28,15 +28,15 @@ from inference import test_main
 
 decay_lr_factor = 0.3
 decay_lr_every = 10
-lr = 0.0001
+lr = 0.00005
 epochs = 2000
 end_epoch = 0
-lr = 0.0001
+lr = 0.00005
 show_every = 100
 val_every = 5
 best_minade = float('inf')
 save_dir = './trained_params'
-date_record = "260115"
+date_record = "260119"
 global_step = 0
 
 import warnings
@@ -70,16 +70,21 @@ def save_checkpoint(checkpoint_dir, model, optimizer, end_epoch, val_minade, dat
         'end_epoch' : end_epoch,
         'val_minade': val_minade
         }
-    checkpoint_path = os.path.join(checkpoint_dir, f'bs_128_full_cnn_onnx_epoch_{end_epoch}.valminade_{val_minade:.6f}.{date}.{"ParkE2E"}.pth')
+    checkpoint_path = os.path.join(checkpoint_dir, f'FT_128_full_cnn_onnx_epoch_{end_epoch}.valminade_{val_minade:.6f}.{date}.{"ParkE2E"}.pth')
     torch.save(state, checkpoint_path)
     print('model saved to %s' % checkpoint_path)
     
-def load_checkpoint(checkpoint_path, model, optimizer):
-    state = torch.load(checkpoint_path)
-    model.load_state_dict(state['state_dict'])
-    optimizer.load_state_dict(state['optimizer'])
-    print('model loaded from %s' % checkpoint_path)
-    return checkpoint_path['end_epoch']
+def load_checkpoint(checkpoint_path, model, optimizer=None, map_location=None):
+    """
+    返回:
+        start_epoch, best_minade
+    """
+    checkpoint = torch.load(checkpoint_path, map_location=map_location)
+
+    model.load_state_dict(checkpoint['state_dict'])
+
+    # if optimizer is not None and 'optimizer' in checkpoint:
+    #     optimizer.load_state_dict(checkpoint['optimizer'])
 
 
 
@@ -128,15 +133,17 @@ def train(config_obj):
         traj_point_loss_func = TrajPointLoss(config_obj)
 
     
-    optimizer = optim.Adam(model.parameters(), lr=lr, weight_decay=0.0)
+    optimizer = optim.Adam(model.parameters(), lr=lr, weight_decay=1e-5)
     # scheduler = optim.lr_scheduler.StepLR(
     #     optimizer, step_size=decay_lr_every, gamma=decay_lr_factor)
-    scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=100)
+    scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=1000)
     # scheduler = MinStepLR(optimizer, step_size=decay_lr_every, gamma=decay_lr_factor,min_lr=1e-5)
     
 
 
     # training loop
+    resume_ckpt = "./trained_params/bs_128_full_cnn_onnx_epoch_1714.valminade_0.000001.260119.ParkE2E.pth"
+    load_checkpoint(resume_ckpt, model, optimizer, map_location=device)
 
     model.train()
     for epoch in range(epochs):
@@ -184,7 +191,7 @@ def train(config_obj):
             print("eval as epoch:{epoch}")
             metrics = get_eval_metric_results(config_obj, model, val_loader, device, 19)
             curr_minade = metrics
-            print(f"minADE:{metrics:7f}")
+            print(f"minADE:{metrics:10f}")
 
             if curr_minade < (best_minade):
                 best_minade = curr_minade

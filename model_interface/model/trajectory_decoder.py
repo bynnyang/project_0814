@@ -343,17 +343,14 @@ class ONNXTransformerDecoderLayer(nn.Module):
             src = torch.zeros(src.size(0), 1, src.size(2), device=src.device, dtype=src.dtype)
 
         x = tgt
-        sa = self.self_attn(self.norm1(x), self.norm1(x), self.norm1(x),
-                        tgt_mask, tgt_key_padding_mask)
-        x = x + self.dropout1(sa)
+        output = self.self_attn(x, x, x, tgt_mask, tgt_key_padding_mask)
+        x = self.norm1(x + self.dropout1(output))
 
-        # cross-attn
-        ca = self.cross_attn(self.norm2(x), src, src)
-        x = x + self.dropout2(ca)
+        output = self.cross_attn(x, src, src)
+        x = self.norm2(x + self.dropout2(output))
 
-        # ffn
-        ff = self.ffn(self.norm3(x))
-        x = x + self.dropout3(ff)
+        output = self.ffn(x)
+        x = self.norm3(x + self.dropout3(output))
         return x
 
 
@@ -361,17 +358,17 @@ class ONNXTransformerDecoderLayer(nn.Module):
 # ONNX-friendly Transformer Decoder
 # ----------------------------
 class ONNXTransformerDecoder(nn.Module):
-    def __init__(self, layer, num_layers, d_model, use_final_norm: bool = True):
+    def __init__(self, layer, num_layers):
         super().__init__()
         self.layers = nn.ModuleList([copy.deepcopy(layer) for _ in range(num_layers)])
-        self.final_norm = nn.LayerNorm(d_model) if use_final_norm else None
+        # self.final_norm = nn.LayerNorm(d_model) if use_final_norm else None
 
     def forward(self, tgt, memory=None, tgt_mask=None, tgt_key_padding_mask=None):
         x = tgt
         for layer in self.layers:
             x = layer(x, memory, tgt_mask, tgt_key_padding_mask)
-        if self.final_norm is not None:
-            x = self.final_norm(x)
+        # if self.final_norm is not None:
+        #     x = self.final_norm(x)
         return x
 
 
@@ -395,8 +392,8 @@ class TrajectoryDecoderONNX(nn.Module):
 
         self.pos_embed = nn.Parameter(torch.randn(1, item_cnt, self.cfg.tf_de_dim) * .02)
         # 使用 ONNX-friendly Transformer
-        tf_layer = ONNXTransformerDecoderLayer(d_model=self.cfg.tf_de_dim, n_heads=self.cfg.tf_de_heads, d_ff=512, dropout=0.05)
-        self.tf_decoder = ONNXTransformerDecoder(tf_layer, num_layers=self.cfg.tf_de_layers, d_model=self.cfg.tf_de_dim, use_final_norm=True)
+        tf_layer = ONNXTransformerDecoderLayer(d_model=self.cfg.tf_de_dim, n_heads=self.cfg.tf_de_heads, d_ff=512, dropout=0.1)
+        self.tf_decoder = ONNXTransformerDecoder(tf_layer, num_layers=self.cfg.tf_de_layers)
         self.output_layer = nn.Sequential(
             nn.Linear(self.cfg.tf_de_dim, 2),
             nn.Tanh()
