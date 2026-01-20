@@ -208,6 +208,13 @@ class CarParking(gym.Env):
         d_lat = dx * e_perp[0]     + dy * e_perp[1]
 
         return d_lat, d_lon
+    
+    def _soft_hinge(self, x: float, sharpness: float = 10.0) -> float:
+        """
+        平滑版 max(0, x)，sharpness 越大越接近 ReLU。
+        """
+        # softplus(x) = log(1+exp(x))
+        return np.log1p(np.exp(sharpness * x)) / sharpness
 
     def _get_reward(self, prev_state: State, curr_state: State, lidar_dist: List):
 
@@ -299,7 +306,7 @@ class CarParking(gym.Env):
         MIN_STEP_GAP = 3         # 防止同一步/极短步误触：>=2~5
         HEAVY_TAIL_STEPS = 12           # 之后的路径（后续步数）也要罚
         HEAVY_TAIL_PEN = 0.6           # 每步持续罚（后续路径重罚）
-        FREE_SHIFTS = 5
+        FREE_SHIFTS = 6
 
 
         gear_reward = 0
@@ -500,10 +507,29 @@ class CarParking(gym.Env):
             # linearly increasing penalty to strongly break loops
             stuck_pen = -STUCK_K * (self._stuck_steps - STUCK_START + 1)
 
-        return [time_cost, rs_dist_reward, dist_reward, angle_reward, box_union_reward, gear_reward, abs_dist_pen + abs_ang_pen, near_bonus, stuck_pen, risk_reward]
+        high_speed = 0.0
+        v = curr_state.speed
+        v_th = 1.0
+        w_v = 10.0
+        v_excess = abs(v) - v_th
+        v_pen = self._soft_hinge(v_excess, sharpness=10.0)      # >=0
+        high_speed -= w_v * (v_pen ** 2)                       # 二次惩罚：越大惩罚增长更快
+
+
+        big_steer = 0.0
+        steer = curr_state.steering
+        steer_th = 0.55    # 例：弧度 ~20deg；如果你的单位是度就改成 20
+        w_steer  = 5.0
+
+        steer_excess = abs(steer) - steer_th
+        steer_pen = self._soft_hinge(steer_excess, sharpness=10.0)
+        big_steer -= w_steer * steer_pen
+
+
+        return [time_cost, rs_dist_reward, dist_reward, angle_reward, box_union_reward, gear_reward, abs_dist_pen + abs_ang_pen, near_bonus, stuck_pen, risk_reward, high_speed, big_steer]
         
     def get_reward(self, status, prev_state, observation):
-        reward_info = [0,0,0,0,0,0,0,0,0,0]
+        reward_info = [0,0,0,0,0,0,0,0,0,0,0,0]
         lidar_dist = observation['lidar'] * LIDARRANGE
         if status == Status.CONTINUE:
             reward_info = self._get_reward(prev_state, self.vehicle.state, lidar_dist)

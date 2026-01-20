@@ -50,7 +50,6 @@ def eval(env, agent, episode=2000, log_path='', multi_level=False, post_proc_act
         step_num = 0
         path_length = 0
         last_xy = (env.vehicle.state.loc.x, env.vehicle.state.loc.y)
-        last_obs = obs['target']
         eval_pose_list = []
         eval_pose_list.append(init_pose_np)
         while not done:
@@ -59,9 +58,6 @@ def eval(env, agent, episode=2000, log_path='', multi_level=False, post_proc_act
                 action, _ = agent.choose_action_eval(obs, eval_pose_list)
             else:
                 action, _ = agent.get_action(obs)
-            # if (last_obs == obs['target']).all():
-            #     action = env.action_space.sample()
-            last_obs = obs['target']
             next_obs, reward, done, info = env.step(action)
             next_pose = agent.vcs_action_step(eval_pose_list[-1], action)
             eval_pose_list.append(next_pose)

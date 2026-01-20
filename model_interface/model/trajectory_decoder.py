@@ -336,17 +336,14 @@ class ONNXTransformerDecoderLayer(nn.Module):
         # output = self.ffn(x)
         # x = self.norm3(x + self.dropout3(output))
         x = tgt
-        sa = self.self_attn(self.norm1(x), self.norm1(x), self.norm1(x),
-                        tgt_mask, tgt_key_padding_mask)
-        x = x + self.dropout1(sa)
+        output = self.self_attn(x, x, x, tgt_mask, tgt_key_padding_mask)
+        x = self.norm1(x + self.dropout1(output))
 
-        # cross-attn
-        ca = self.cross_attn(self.norm2(x), src, src)
-        x = x + self.dropout2(ca)
+        output = self.cross_attn(x, src, src)
+        x = self.norm2(x + self.dropout2(output))
 
-        # ffn
-        ff = self.ffn(self.norm3(x))
-        x = x + self.dropout3(ff)
+        output = self.ffn(x)
+        x = self.norm3(x + self.dropout3(output))
         '''
         等价的norm_first=True的写法，强化学习PPO重新使用该方法
 
@@ -373,17 +370,17 @@ class ONNXTransformerDecoderLayer(nn.Module):
 # ONNX-friendly Transformer Decoder
 # ----------------------------
 class ONNXTransformerDecoder(nn.Module):
-    def __init__(self, layer, num_layers, d_model, use_final_norm: bool = True):
+    def __init__(self, layer, num_layers):
         super().__init__()
         self.layers = nn.ModuleList([copy.deepcopy(layer) for _ in range(num_layers)])
-        self.final_norm = nn.LayerNorm(d_model) if use_final_norm else None
+        # self.final_norm = nn.LayerNorm(d_model) if use_final_norm else None
 
     def forward(self, tgt, memory=None, tgt_mask=None, tgt_key_padding_mask=None):
         x = tgt
         for layer in self.layers:
             x = layer(x, memory, tgt_mask, tgt_key_padding_mask)
-        if self.final_norm is not None:
-            x = self.final_norm(x)
+        # if self.final_norm is not None:
+        #     x = self.final_norm(x)
         return x
 
 
@@ -408,7 +405,7 @@ class TrajectoryDecoderONNX(nn.Module):
         self.pos_embed = nn.Parameter(torch.randn(1, item_cnt, self.cfg.tf_de_dim) * .02)
         # 使用 ONNX-friendly Transformer
         tf_layer = ONNXTransformerDecoderLayer(d_model=self.cfg.tf_de_dim, n_heads=self.cfg.tf_de_heads, d_ff=512, dropout=0.0)
-        self.tf_decoder = ONNXTransformerDecoder(tf_layer, num_layers=self.cfg.tf_de_layers, d_model=self.cfg.tf_de_dim, use_final_norm=True)
+        self.tf_decoder = ONNXTransformerDecoder(tf_layer, num_layers=self.cfg.tf_de_layers)
         self.output_layer = nn.Sequential(
             nn.Linear(self.cfg.tf_de_dim, 2),
             nn.Tanh()
@@ -604,6 +601,38 @@ class TrajectoryDecoderONNX(nn.Module):
         # pred_point = self.kinematic_step(prev_point, pred_actions)  # [B,4]
 
         return prev_point, pred_actions, mean_u
+    
+
+    def predict(self, encoder_out, point_out, tgt):
+        batch_size, length, feat_dim = tgt.size()
+        assert feat_dim == 4
+
+        padding_num = self.cfg.autoregressive_points -1 - length
+
+        global_context = point_out.reshape(-1, self.cfg.tf_de_dim)
+        
+        offset = 1
+        if padding_num > 0:
+            padding = torch.ones(batch_size, padding_num, 4, device=self.cfg.device) * self.PAD_token
+            tgt = torch.cat([tgt, padding], dim=1)
+
+        tgt_mask, tgt_padding_mask = self.create_mask(tgt)
+        final_global_context = global_context.unsqueeze(1).repeat(1, tgt.size(1), 1)
+
+        tgt_embedding = self.traj_embedding(tgt)
+        tgt_embedding = tgt_embedding + final_global_context
+        tgt_embedding = tgt_embedding + self.pos_embed[:, :tgt.size(1), :]
+
+        pred_actions_logtis = self.decoder(encoder_out, tgt_embedding, tgt_mask, tgt_padding_mask)
+
+        last_step_pred_action_logti = pred_actions_logtis[:, length - offset, :]
+        
+        pred_actions = self.output_layer(last_step_pred_action_logti)
+
+        prev_point = tgt[:, length - 1, :]         # [B,4]
+        pred_point = self.kinematic_step(prev_point, pred_actions)  # [B,4]
+
+        return pred_point
     
 
 class TrajectoryValueDecoderONNX(TrajectoryDecoderONNX):

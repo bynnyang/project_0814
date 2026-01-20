@@ -18,7 +18,7 @@ REAR_HANG = 0.704  # rear hang length
 LENGTH = WHEEL_BASE+FRONT_HANG+REAR_HANG
 WIDTH = 1.781  # width
 STEP_TIME_AND_LENGHT = 0.2
-MASK_STEP_TIME = 0.2
+MASK_STEP_TIME = 0.6
 
 from shapely.geometry import LinearRing
 VehicleBox = LinearRing([
@@ -125,7 +125,7 @@ REWARD_WEIGHT = OrderedDict({'time_cost':1,\
             'risk_reward':5.0})
 
 OUTBOUND_REWARD = -30
-OUTTIME_REWARD = -5
+OUTTIME_REWARD = -30
 ARRIVED_REWARD = 40
 COLLIDED_REWARD = -30
 

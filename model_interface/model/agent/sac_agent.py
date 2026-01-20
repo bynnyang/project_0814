@@ -151,7 +151,7 @@ class SACBundle(nn.Module):
         self.actor_net = TrajectoryDecoderONNX(cfg)
 
         self.log_std = nn.Parameter(
-            torch.tensor([[-0.5, -0.1]], device=device),
+            torch.tensor([[-0.5, -0.5]], device=device),
             requires_grad=True
         )
 
@@ -213,13 +213,13 @@ class SACConfig(ConfigBase):
         self.adam_epsilon = 1e-8
         self.dist_type = "gaussian"
         self.hidden_size = 256
-        self.memory_size = 35000
+        self.memory_size = 30000
         self.batch_size = 64
         # self.mini_batch_size = 32
         self.mini_epoch = 1
         self.initial_temperature = 0.01
         self.action_dim = 2
-        self.target_entropy = self.action_dim * 0.5
+        self.target_entropy = self.action_dim * 0.0
 
         # tricks
         self.learn_temperature = True
@@ -277,9 +277,9 @@ class SACAgent(AgentBase):
         dec_sd = _extract_sub_state_dict(state_dict, "trajectory_decoder.")
 
         # actor
-        b.actor_encoder.load_state_dict(me_sd, strict=strict)
-        b.actor_point_encoder.load_state_dict(tp_sd, strict=strict)
-        b.actor_net.load_state_dict(dec_sd, strict=strict)
+        b.actor_encoder.load_state_dict(me_sd)
+        b.actor_point_encoder.load_state_dict(tp_sd)
+        b.actor_net.load_state_dict(dec_sd)
 
         # Q 网络：encoder 结构不同（多了 action 模态），所以：
         # --- Q encoder：只迁移公共 embed 子模块（不会碰 net 第一层，也不会动 critic 新增的 embed_action） ---

@@ -266,7 +266,7 @@ if __name__=="__main__":
 
     def rs_mix_prob(episode: int) -> float:
         start_episode = 1000
-        end_episode = 10000
+        end_episode = 30000
         start_p = 1.0
         end_p = 0.1
         if episode < start_episode:
@@ -323,7 +323,7 @@ if __name__=="__main__":
         while not done:
             step_num += 1
             total_step_num += 1
-            if total_step_num <= parking_agent.configs.memory_size and not parking_agent.executing_rs:
+            if False and total_step_num <= parking_agent.configs.memory_size and not parking_agent.executing_rs:
                 if step_num % 7 == 1:
                     macro = parking_agent.sample_action_with_mask(sample_mask)
                 action = np.clip(macro, -0.9, 0.9)
@@ -506,16 +506,16 @@ if __name__=="__main__":
         #     f.clear()
 
     
-        if (i+1) % 1== 0 and ((not parking_agent.distributed) or rank == 0):
+        if (i+1) % 1000== 0 and ((not parking_agent.distributed) or rank == 0):
             eval_episode = args.eval_episode
             choose_action = True
             with torch.no_grad():
                 # eval on dlp
-                env.set_level('dlp')
-                log_path = save_path+'/dlp'
-                if not os.path.exists(log_path):
-                    os.makedirs(log_path)
-                eval(env, parking_agent, episode=eval_episode, log_path=log_path, post_proc_action=choose_action)
+                # env.set_level('dlp')
+                # log_path = save_path+'/dlp'
+                # if not os.path.exists(log_path):
+                #     os.makedirs(log_path)
+                # eval(env, parking_agent, episode=eval_episode, log_path=log_path, post_proc_action=choose_action)
                 
                 # # eval on extreme
                 # env.set_level('Extrem')
