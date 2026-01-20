@@ -115,13 +115,13 @@ REWARD_RATIO = 0.1
 from typing import OrderedDict
 REWARD_WEIGHT = OrderedDict({'time_cost':1,\
             'rs_dist_reward':0,\
-            'dist_reward':15,\
-            'angle_reward':20,\
+            'dist_reward':10,\
+            'angle_reward':15,\
             'box_union_reward':20,
             'gear_shift_reward':4.0,
-            'abs_shape':5.0,
+            'abs_shape':0.0,
             'near_bonus':5.0,
-            'low_speed':8.0,
+            'low_speed':1.0,
             'risk_reward':5.0,
             'high_speed':1.0,
             'big_steer':1.0})

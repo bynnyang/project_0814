@@ -506,11 +506,12 @@ class CarParking(gym.Env):
         if self._stuck_steps >= STUCK_START:
             # linearly increasing penalty to strongly break loops
             stuck_pen = -STUCK_K * (self._stuck_steps - STUCK_START + 1)
+        stuck_pen = max(-0.5, stuck_pen)
 
         high_speed = 0.0
         v = curr_state.speed
         v_th = 1.0
-        w_v = 5.0
+        w_v = 0.5
         v_excess = abs(v) - v_th
         v_pen = self._soft_hinge(v_excess, sharpness=10.0)      # >=0
         high_speed -= w_v * (v_pen ** 2)                       # 二次惩罚：越大惩罚增长更快
@@ -520,7 +521,7 @@ class CarParking(gym.Env):
         big_steer = 0.0
         steer = curr_state.steering
         steer_th = 0.55    # 例：弧度 ~20deg；如果你的单位是度就改成 20
-        w_steer  = 5.0
+        w_steer  = 0.1
 
         steer_excess = abs(steer) - steer_th
         steer_pen = self._soft_hinge(steer_excess, sharpness=10.0)

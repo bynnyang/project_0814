@@ -86,6 +86,93 @@ def reserve_gpu_memory(device, reserve_mb=4096):
     dummy = torch.empty(n_bytes // 4, dtype=torch.float32, device=device)
     return dummy
 
+class GpuBurnWorker:
+    def __init__(self, device=0, iters_per_burst=5, sleep_ms=5):
+        self.device = device
+        self.iters_per_burst = iters_per_burst
+        self.sleep_ms = sleep_ms
+
+        self.stop_flag = threading.Event()
+        self.run_flag = threading.Event()
+        self._thread = None
+
+    def start(self):
+        if self._thread is not None and self._thread.is_alive():
+            return
+        self.stop_flag.clear()
+        self.run_flag.set()  # 默认开跑
+        self._thread = threading.Thread(target=self._loop, daemon=False)
+        self._thread.start()
+
+    def pause(self):
+        self.run_flag.clear()
+
+    def resume(self):
+        self.run_flag.set()
+
+    def stop(self, join_timeout=None):
+        """停止 burn，并回收资源；join_timeout=None 表示一直等到线程退出。"""
+        self.stop_flag.set()
+        # 为了让 pause 状态下也能立刻退出（不一直睡）
+        self.run_flag.set()
+        if self._thread is not None:
+            self._thread.join(timeout=join_timeout)
+
+    def _loop(self):
+        # 线程内创建 CUDA 资源，线程退出时统一释放
+        torch.cuda.set_device(self.device)
+
+        # 用 stream 让 burn 更可控（可选）
+        stream = torch.cuda.Stream(device=self.device)
+
+        # 提前分配，避免循环里不断生成新 tensor
+        with torch.cuda.stream(stream):
+            x = torch.randn(3000, 3000, device="cuda")
+            y = torch.empty_like(x)  # 用 out 复用内存（减少显存抖动）
+            end = torch.cuda.Event(enable_timing=False)
+
+        # 确保初始化完成
+        stream.synchronize()
+
+        try:
+            while not self.stop_flag.is_set():
+                # 若暂停：用 wait(timeout) 代替 sleep + busy loop，且可被 stop 立刻打断
+                if not self.run_flag.is_set():
+                    # 等待 run_flag 置位或 stop_flag 置位
+                    self.run_flag.wait(timeout=0.01)
+                    continue
+
+                # —— GPU burn ——（尽量避免分配）
+                with torch.cuda.stream(stream):
+                    for _ in range(self.iters_per_burst):
+                        # y = x @ x, then swap (避免 x=x@x 产生新 tensor)
+                        torch.matmul(x, x, out=y)
+                        x, y = y, x
+                    end.record()
+
+                # 让 burst 真正完成（如果你想 stop 更“立刻”，这里可以缩小 burst 或减少同步频率）
+                stream.synchronize()
+
+                # sleep 也做成可被 stop 打断
+                if self.stop_flag.wait(self.sleep_ms / 1000.0):
+                    break
+
+        finally:
+            # —— 资源释放 ——（尽力回收本 worker 占用的显存）
+            try:
+                # 先确保 stream 上没有未完成任务
+                stream.synchronize()
+            except Exception:
+                pass
+
+            # 删除 GPU tensor / event / stream 的引用
+            del x, y, end, stream
+
+            # 尽力释放缓存（注意：不会销毁 CUDA context，但会把缓存还给 PyTorch allocator）
+            torch.cuda.empty_cache()
+            # 如果你有大量碎片，偶尔加这个（代价较大）：
+            # torch.cuda.ipc_collect()
+
 
 class SceneChoose():
     def __init__(self) -> None:
@@ -301,6 +388,9 @@ if __name__=="__main__":
     # BURN_PERIOD    = BURN_ON_STEPS + BURN_OFF_STEPS
     # t = threading.Thread(target=gpu_burn, daemon=True)
     # t.start()
+    burn = GpuBurnWorker(device=0, iters_per_burst=5, sleep_ms=5)
+    burn.start()
+    release = None
 
     for i in range(args.train_episode):
         scene_chosen = scene_chooser.choose_case()
@@ -334,7 +424,7 @@ if __name__=="__main__":
                     # if step_num % 5 == 1:
                     #     noisy_a = np.random.normal(0, 0.5, 2)
                     # action = np.clip(action_raw + noisy_a, -0.9, 0.9)
-                    action = np.clip(action_raw, -0.9, 0.9)
+                    action = np.clip(action_raw, -0.95, 0.95)
                 else:
                     action = action_raw
             next_obs, reward, done, info = env.step(action)
@@ -354,6 +444,9 @@ if __name__=="__main__":
                 obs = next_obs
                 predict_pose_list.clear()
                 predict_pose_list.append(start_traj_point_np)
+            if release is None and total_step_num > parking_agent.configs.memory_size:
+                burn.stop()
+                release = True
             # obs = next_obs
             if total_step_num > parking_agent.configs.memory_size and total_step_num%10==0:
                 actor_loss, critic_loss = parking_agent.update(total_step_num)
