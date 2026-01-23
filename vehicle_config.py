@@ -51,7 +51,7 @@ for i in np.arange(VALID_STEER[-1], -(VALID_STEER[-1] + VALID_STEER[-1]/PRECISIO
 N_DISCRETE_ACTION = len(discrete_actions)
 
 
-GAMMA = 0.992
+GAMMA = 0.994
 BATCH_SIZE = 2048
 LR = 5e-5 #LR = 5e-6
 TAU = 0.1

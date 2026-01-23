@@ -255,7 +255,7 @@ class DlpCaseChoose():
 if __name__=="__main__":
 
     parser = argparse.ArgumentParser()
-    parser.add_argument('--agent_ckpt', type=str, default=None) # './model/ckpt/SAC.pt'
+    parser.add_argument('--agent_ckpt', type=str, default='./rl_model/SAC_ok2.pt') # './model/ckpt/SAC.pt'
     parser.add_argument('--img_ckpt', type=str, default='./model/ckpt/autoencoder.pt')
     parser.add_argument('--train_episode', type=int, default=100000)
     parser.add_argument('--eval_episode', type=int, default=10)
@@ -332,10 +332,12 @@ if __name__=="__main__":
     checkpoint_path = args.agent_ckpt
     if checkpoint_path is not None:
         rl_agent.load(checkpoint_path, params_only=True)
+        # rl_agent.reset_optimizers(reinit_alpha=True)
+        rl_agent.freeze_multi_encoder_embed_img()
         print('load pre-trained model!')
-    img_encoder_checkpoint =  args.img_ckpt if USE_IMG else None
-    if img_encoder_checkpoint is not None and os.path.exists(img_encoder_checkpoint):
-        rl_agent.load_img_encoder(img_encoder_checkpoint, require_grad=UPDATE_IMG_ENCODE)
+    # img_encoder_checkpoint =  args.img_ckpt if USE_IMG else None
+    # if img_encoder_checkpoint is not None and os.path.exists(img_encoder_checkpoint):
+    #     rl_agent.load_img_encoder(img_encoder_checkpoint, require_grad=UPDATE_IMG_ENCODE)
 
     step_ratio = env.vehicle.kinetic_model.step_len*env.vehicle.kinetic_model.n_step*1.0
     rs_planner = RsPlanner(step_ratio)
@@ -349,15 +351,17 @@ if __name__=="__main__":
     succ_record = []
     total_step_num = 0
     best_success_rate = [0, 0, 0, 0]
+    best_success_ratio = 0
+    best_reward_averge = 0
     regressive_step = REGRESSIVE_STEP
 
     def rs_mix_prob(episode: int) -> float:
         start_episode = 1000
         end_episode = 30000
-        start_p = 1.0
-        end_p = 0.1
+        start_p = 0.0
+        end_p = 0.0
         if episode < start_episode:
-            return 1.1
+            return 0.0
         if episode >= end_episode:
             return end_p
 
@@ -410,21 +414,49 @@ if __name__=="__main__":
         predict_pose_list = []
         predict_pose_list.append(start_traj_point_np)
         noisy_a = np.random.normal(0, 0.5, 2)
+        mode = "macro"        # or "policy"
+        mode_left = 0
+        macro = None
+        warmup_steps = int(parking_agent.configs.memory_size)  # 你要的阈值
+        p_macro = 0.5       # warmup阶段选macro的概率（你自己调）
+        hold_min = 10       # 模式最短保持步数
+        hold_max = 30       # 模式最长保持步数
+        macro_period = 7    # macro刷新周期（保持你原来习惯）
+        clip_macro = 0.9
+        clip_policy = 0.95
         while not done:
             step_num += 1
             total_step_num += 1
-            if total_step_num <= parking_agent.configs.memory_size and not parking_agent.executing_rs:
-                if step_num % 7 == 1:
-                    macro = parking_agent.sample_action_with_mask(sample_mask)
-                action = np.clip(macro, -0.9, 0.9)
-                log_prob = 0.0
+            if False and (total_step_num <= warmup_steps) and (not parking_agent.executing_rs):
+                # --- 1) decide / refresh mode only when expired ---
+                if mode_left <= 0:
+                    # 按概率选模式
+                    if np.random.rand() < p_macro:
+                        mode = "macro"
+                    else:
+                        mode = "policy"
+                    # 选定后保持一段时间（随机一个长度更好，避免周期性偏差）
+                    mode_left = np.random.randint(hold_min, hold_max + 1)
+
+                mode_left -= 1
+
+                # --- 2) execute selected mode ---
+                if mode == "macro":
+                    # macro 只在固定周期刷新一次，其余步保持不变
+                    if (macro is None) or (step_num % macro_period == 1):
+                        macro = parking_agent.sample_action_with_mask(sample_mask)
+                    action = np.clip(macro, -clip_macro, clip_macro)
+                    log_prob = 0.0
+
+                else:  # mode == "policy"
+                    action_raw, log_prob = parking_agent.get_action(obs, predict_pose_list)
+                    action = np.clip(action_raw, -clip_policy, clip_policy)
+
             else:
+                # warmup结束 or 正在执行RS：保持你原来的逻辑
                 action_raw, log_prob = parking_agent.get_action(obs, predict_pose_list)
                 if not parking_agent.executing_rs:
-                    # if step_num % 5 == 1:
-                    #     noisy_a = np.random.normal(0, 0.5, 2)
-                    # action = np.clip(action_raw + noisy_a, -0.9, 0.9)
-                    action = np.clip(action_raw, -0.95, 0.95)
+                    action = np.clip(action_raw, -clip_policy, clip_policy)
                 else:
                     action = action_raw
             next_obs, reward, done, info = env.step(action)
@@ -570,12 +602,12 @@ if __name__=="__main__":
             best_success_rate = list(np.minimum(raw_best_success_rate, scene_chooser.target_success_rate))
             if distributed:
                 dist.barrier()
-            if rank == 0:
-                parking_agent.save("%s/SAC_best.pt" % (save_path),params_only=True)
-                f_best_log = open(save_path+'best.txt', 'w')
-                f_best_log.write('epoch: %s, success rate: %s %s %s %s'%(i+1, raw_best_success_rate[0],
-                                    raw_best_success_rate[1], raw_best_success_rate[2], raw_best_success_rate[3]))
-                f_best_log.close()
+            # if rank == 0:
+            #     parking_agent.save("%s/SAC_best.pt" % (save_path),params_only=True)
+            #     f_best_log = open(save_path+'best.txt', 'w')
+            #     f_best_log.write('epoch: %s, success rate: %s %s %s %s'%(i+1, raw_best_success_rate[0],
+            #                         raw_best_success_rate[1], raw_best_success_rate[2], raw_best_success_rate[3]))
+            #     f_best_log.close()
             if distributed:
                 dist.barrier()
         if (i+1) % 2000 == 0:
@@ -622,7 +654,14 @@ if __name__=="__main__":
                 log_path = save_path+'/complex'
                 if not os.path.exists(log_path):
                     os.makedirs(log_path)
-                eval(env, parking_agent, episode=eval_episode, log_path=log_path, post_proc_action=choose_action)
+                success_ratio, reward_avg = eval(env, parking_agent, episode=eval_episode, log_path=log_path, post_proc_action=choose_action)
+                if success_ratio>=best_success_ratio and reward_avg >= best_reward_averge:
+                    parking_agent.save("%s/SAC_best.pt" % (save_path),params_only=True)
+                    f_best_log = open(save_path+'best.txt', 'w')
+                    f_best_log.write('epoch: %s, success rate: %s, reward_avg: %s '%(i+1, success_ratio, reward_avg))
+                    f_best_log.close()
+                best_success_ratio = success_ratio
+                best_reward_averge = reward_avg
                 
                 # # eval on normalize
                 # env.set_level('Normal')

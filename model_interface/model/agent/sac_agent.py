@@ -219,7 +219,7 @@ class SACConfig(ConfigBase):
         self.mini_epoch = 1
         self.initial_temperature = 0.01
         self.action_dim = 2
-        self.target_entropy = self.action_dim *(-0.8)
+        self.target_entropy = self.action_dim *(-1.0)
 
         # tricks
         self.learn_temperature = True
@@ -445,7 +445,7 @@ class SACAgent(AgentBase):
                 raise NotImplementedError
             mu = policy_out   
             log_std = b.log_std.expand_as(mu)  # To make 'log_std' have the same dimension as 'mean'
-            log_std = torch.clamp(log_std, min=-2.0, max=0.0)
+            log_std = torch.clamp(log_std, min=-6.0, max=0.0)
             std = torch.exp(log_std)
             dist = Normal(mu, std)
     
@@ -678,7 +678,7 @@ class SACAgent(AgentBase):
         # mean_u = self.atanh(a_mean)
         mean_u = policy_dist
         log_std = b.log_std.expand_as(mean_u)
-        log_std = torch.clamp(log_std, -2.0, 0.0)
+        log_std = torch.clamp(log_std, -6.0, 0.0)
         std = torch.exp(log_std)
         dist_u = Normal(mean_u, std)
         action_batch_u = dist_u.rsample()
@@ -1110,7 +1110,8 @@ class SACAgent(AgentBase):
 
                 else:
                     # 直接赋值到 self 上（configs 这类）
-                    setattr(self, name, ckpt_val)
+                    None
+                    # setattr(self, name, ckpt_val)
 
             # 2) 恢复 state normalize
             if "state_norm" in checkpoint:
@@ -1134,3 +1135,94 @@ class SACAgent(AgentBase):
 
     def set_start_traj_point(self, start_traj_point_np: np.ndarray):
         self.start_traj_point_np = np.asarray(start_traj_point_np, dtype=np.float32).reshape(4,)
+
+
+    def reset_optimizers(self, reinit_alpha: bool = False):
+        """
+        Reset optimizers for a new training phase (e.g., switch scenario / change reward).
+        This will clear Adam momentum/2nd-moment stats by rebuilding optimizers.
+
+        Args:
+            reinit_alpha:
+                - False (default): keep current log_alpha value, just reset optimizer state.
+                - True: reinitialize log_alpha to configs.initial_temperature.
+        """
+        b = self._unwrap(self.bundle)
+
+        # --------- 1) handle log_alpha correctly ----------
+        # Case A: you use nn.Parameter (recommended)
+        # Case B: you use plain torch.Tensor with requires_grad=True (your current code)
+        if getattr(self.configs, "learn_temperature", True):  # 如果你有这个开关更好
+            init_log_alpha = float(np.log(self.configs.initial_temperature))
+
+            if not hasattr(self, "log_alpha") or self.log_alpha is None:
+                # create it
+                self.log_alpha = nn.Parameter(torch.tensor(init_log_alpha, device=self.device))
+            else:
+                if reinit_alpha:
+                    # keep the object if it's Parameter/Tensor, just reset its value
+                    with torch.no_grad():
+                        self.log_alpha.data.copy_(torch.tensor(init_log_alpha, device=self.device))
+
+                # 如果它不是 Parameter，建议转成 Parameter（可选但强烈建议）
+                if not isinstance(self.log_alpha, nn.Parameter):
+                    # 保留当前值
+                    curr = self.log_alpha.detach()
+                    self.log_alpha = nn.Parameter(curr.to(self.device))
+
+        # --------- 2) rebuild optimizers (this clears momentum states) ----------
+        # actor optimizer
+        b.log_std = nn.Parameter(
+            torch.tensor([[-0.5, -0.5]], device=self.device),
+            requires_grad=True
+        )
+        self.actor_optimizer = torch.optim.Adam([
+            {"params": [p for p in b.actor_encoder.parameters() if p.requires_grad], "lr": self.configs.lr_backbone},
+            {"params": [p for p in b.actor_point_encoder.parameters() if p.requires_grad], "lr": self.configs.lr_actor},
+            {"params": [p for p in b.actor_net.parameters() if p.requires_grad], "lr": self.configs.lr_actor},
+            {"params": [b.log_std], "lr": self.configs.lr_log_std},
+        ], eps=self.configs.adam_epsilon)
+
+        # critic1 optimizer
+        self.critic_optimizer1 = torch.optim.Adam([
+            {"params": [p for p in b.q1_encoder.parameters() if p.requires_grad], "lr": self.configs.lr_backbone},
+            {"params": [p for p in b.q1_point_encoder.parameters() if p.requires_grad], "lr": self.configs.lr_critic},
+            {"params": [p for p in b.q1_net.parameters() if p.requires_grad], "lr": self.configs.lr_critic},
+        ], eps=self.configs.adam_epsilon)
+
+        # critic2 optimizer
+        self.critic_optimizer2 = torch.optim.Adam([
+            {"params": [p for p in b.q2_encoder.parameters() if p.requires_grad], "lr": self.configs.lr_backbone},
+            {"params": [p for p in b.q2_point_encoder.parameters() if p.requires_grad], "lr": self.configs.lr_critic},
+            {"params": [p for p in b.q2_net.parameters() if p.requires_grad], "lr": self.configs.lr_critic},
+        ], eps=self.configs.adam_epsilon)
+
+        # alpha optimizer
+        if getattr(self.configs, "learn_temperature", True):
+            self.log_alpha_optimizer = torch.optim.Adam(
+                [self.log_alpha],
+                lr=self.configs.lr_alpha,
+                eps=self.configs.adam_epsilon
+            )
+
+        # --------- 3) optional sanity checks ----------
+        if getattr(self, "verbose", False):
+            # log_std should be in actor optimizer
+            found_std = any(
+                b.log_std is p
+                for g in self.actor_optimizer.param_groups
+                for p in g["params"]
+            )
+            if not found_std:
+                print("[reset_optimizers][WARN] b.log_std not found in actor_optimizer param_groups.")
+
+            if getattr(self.configs, "learn_temperature", True):
+                found_la = any(
+                    self.log_alpha is p
+                    for g in self.log_alpha_optimizer.param_groups
+                    for p in g["params"]
+                )
+                if not found_la:
+                    print("[reset_optimizers][WARN] log_alpha not found in log_alpha_optimizer param_groups.")
+
+            print(f"[reset_optimizers] done. reinit_alpha={reinit_alpha}")

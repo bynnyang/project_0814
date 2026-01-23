@@ -168,4 +168,4 @@ def eval(env, agent, episode=2000, log_path='', multi_level=False, post_proc_act
                 f_record_txt.write('path length: %s '%np.mean(path_length_record[k])+'+-(%s)\n'%np.std(path_length_record[k]))
         f_record_txt.close()
     
-    return np.mean(succ_record)
+    return np.mean(succ_record), np.mean(reward_record)
