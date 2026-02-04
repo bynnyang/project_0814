@@ -255,7 +255,8 @@ class DlpCaseChoose():
 if __name__=="__main__":
 
     parser = argparse.ArgumentParser()
-    parser.add_argument('--agent_ckpt', type=str, default='./rl_model/SAC_ok2.pt') # './model/ckpt/SAC.pt'
+    
+    parser.add_argument('--agent_ckpt', type=str, default='./rl_model/SAC2_2999.pt') # './model/ckpt/SAC.pt'
     parser.add_argument('--img_ckpt', type=str, default='./model/ckpt/autoencoder.pt')
     parser.add_argument('--train_episode', type=int, default=100000)
     parser.add_argument('--eval_episode', type=int, default=10)
@@ -332,7 +333,7 @@ if __name__=="__main__":
     checkpoint_path = args.agent_ckpt
     if checkpoint_path is not None:
         rl_agent.load(checkpoint_path, params_only=True)
-        # rl_agent.reset_optimizers(reinit_alpha=True)
+        rl_agent.reset_optimizers(reinit_alpha=True)
         rl_agent.freeze_multi_encoder_embed_img()
         print('load pre-trained model!')
     # img_encoder_checkpoint =  args.img_ckpt if USE_IMG else None
@@ -417,8 +418,8 @@ if __name__=="__main__":
         mode = "macro"        # or "policy"
         mode_left = 0
         macro = None
-        warmup_steps = int(parking_agent.configs.memory_size)  # 你要的阈值
-        p_macro = 0.5       # warmup阶段选macro的概率（你自己调）
+        warmup_steps = int(parking_agent.configs.memory_size * 1.3)  # 你要的阈值
+        p_macro = 0.95       # warmup阶段选macro的概率（你自己调）
         hold_min = 10       # 模式最短保持步数
         hold_max = 30       # 模式最长保持步数
         macro_period = 7    # macro刷新周期（保持你原来习惯）
@@ -427,7 +428,7 @@ if __name__=="__main__":
         while not done:
             step_num += 1
             total_step_num += 1
-            if False and (total_step_num <= warmup_steps) and (not parking_agent.executing_rs):
+            if (step_num >= 50) and (total_step_num <= warmup_steps) and (not parking_agent.executing_rs):
                 # --- 1) decide / refresh mode only when expired ---
                 if mode_left <= 0:
                     # 按概率选模式
@@ -454,7 +455,10 @@ if __name__=="__main__":
 
             else:
                 # warmup结束 or 正在执行RS：保持你原来的逻辑
-                action_raw, log_prob = parking_agent.get_action(obs, predict_pose_list)
+                if step_num < 50 and (total_step_num <= warmup_steps):
+                    action_raw, log_prob = parking_agent.choose_action_eval(obs, predict_pose_list)
+                else:
+                    action_raw, log_prob = parking_agent.get_action(obs, predict_pose_list)
                 if not parking_agent.executing_rs:
                     action = np.clip(action_raw, -clip_policy, clip_policy)
                 else:
@@ -471,7 +475,10 @@ if __name__=="__main__":
                 dtype=torch.float32
             )  # CPU tensor, [L,4]
             seg_done = (step_num % regressive_step == 0)
-            parking_agent.push_memory((obs, action, reward, done, log_prob, next_obs, pose_seq_cpu, seg_done))
+            success_flag = bool(done and info.get("status", None) == Status.ARRIVED)
+
+            parking_agent.push_memory((obs, action, reward, done, log_prob, next_obs, pose_seq_cpu, seg_done, success_flag))
+            # parking_agent.push_memory((obs, action, reward, done, log_prob, next_obs, pose_seq_cpu, seg_done))
             if seg_done:
                 obs = next_obs
                 predict_pose_list.clear()
@@ -480,8 +487,8 @@ if __name__=="__main__":
                 burn.stop()
                 release = True
             # obs = next_obs
-            if total_step_num > parking_agent.configs.memory_size and total_step_num%10==0:
-                actor_loss, critic_loss = parking_agent.update(total_step_num)
+            if total_step_num > warmup_steps and total_step_num%10==0: 
+                actor_loss, critic_loss = parking_agent.update(total_step_num, i)
                 if total_step_num%1000==0 and (rank == 0):
                     writer.add_scalar("actor_loss", actor_loss, i)
                     writer.add_scalar("critic_loss", critic_loss, i)
@@ -491,7 +498,8 @@ if __name__=="__main__":
             # 退火混合：rs_path_avail 时才抽样是否执行 RS
             if rs_path_avail:
                 p_rs = rs_mix_prob(i)
-                use_rs = (np.random.random() < p_rs)
+                # use_rs = (np.random.random() < p_rs)
+                use_rs = True
             else:
                 p_rs = 0.0
                 use_rs = False
@@ -581,7 +589,7 @@ if __name__=="__main__":
             print("alpha: ", parking_agent.alpha.detach().cpu().numpy().reshape(-1))
             print("episode:%s  average reward:%s"%(i,np.mean(reward_list[-50:])))
             print(np.mean(parking_agent.actor_loss_list[-100:]),np.mean(parking_agent.critic_loss_list[-100:]))
-            print('time_cost ,rs_dist_reward ,dist_reward ,angle_reward ,box_union_reward ,gear_shift_reward ,abs_shape ,near_bonus, low_speed, risk_reward, high_speed, big_steer')
+            print('time_cost ,rs_dist_reward ,dist_reward ,angle_reward ,box_union_reward ,gear_shift_reward ,abs_shape ,near_bonus, low_speed, risk_reward, high_speed, big_steer','u_turn')
             for j in range(10):
                 print(case_id_list[-(10-j)],reward_list[-(10-j)],reward_info_list[-(10-j)])
             print("")
@@ -610,7 +618,7 @@ if __name__=="__main__":
             #     f_best_log.close()
             if distributed:
                 dist.barrier()
-        if (i+1) % 2000 == 0:
+        if (i+1) % 1000 == 0:
             if distributed:
                 dist.barrier()
             if rank == 0:

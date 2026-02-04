@@ -151,6 +151,10 @@ class CarParking(gym.Env):
             if hasattr(self, k):
                 delattr(self, k)
 
+        for k in ["_uturn_rewarded", "_uturn_prev_deg", "_uturn_start_heading"]:
+            if hasattr(self, k):
+                delattr(self, k)
+
         if level is not None:
             self.set_level(level)
         initial_state = self.map.reset(case_id, data_dir)
@@ -528,10 +532,63 @@ class CarParking(gym.Env):
         big_steer -= w_steer * steer_pen
 
 
-        return [time_cost, rs_dist_reward, dist_reward, angle_reward, box_union_reward, gear_reward, abs_dist_pen + abs_ang_pen, near_bonus, stuck_pen, risk_reward, high_speed, big_steer]
+            # ==============================
+        # U-turn one-shot reward
+        # condition:
+        #   1) completed a ~pi heading change (accumulated yaw)
+        #   2) current heading is close to (start_heading + pi)
+        #   3) lateral error |d_lat| within threshold
+        # gives a big reward ONLY ONCE
+        # ==============================
+        uturn_reward = 0.0
+
+        # ---- tunable thresholds ----
+        # 阶段式奖励的角度阶段
+        ANGLE_PHASES = [90, 120]  # 角度阶段，单位：度
+        ANGLE_REWARDS = [5, 10]  # 对应的奖励数值
+        UTURN_DLAT_TH = 10.0  # |d_lat| 阈值（米）
+
+        def _wrap_pi(a: float) -> float:
+            # map angle to (-pi, pi]
+            return (a + math.pi) % (2.0 * math.pi) - math.pi
+
+        def _ang_diff(a: float, b: float) -> float:
+            # smallest abs angle diff in [0, pi]
+            return abs(_wrap_pi(a - b))
+
+       # init
+        if not hasattr(self, "_uturn_rewarded"):
+            self._uturn_rewarded = [False] * len(ANGLE_PHASES)
+
+        # 用“episode 起点朝向”最稳：建议在 env.reset 时显式设置
+        if not hasattr(self, "_uturn_start_heading"):
+            # 如果你有 reset，最好在那里设成 reset 后的初始 heading
+            self._uturn_start_heading = prev_state.heading
+
+        # 用净角度：当前 heading vs 初始 heading（不会被抖动刷）
+        current_angle_rad = _ang_diff(curr_state.heading, self._uturn_start_heading)  # 0~pi
+        current_angle_deg = current_angle_rad * 180.0 / math.pi
+
+        # 可选：为了严格“跨越阈值才触发”，记录上一时刻的净角度
+        if not hasattr(self, "_uturn_prev_deg"):
+            self._uturn_prev_deg = 0.0
+        prev_deg = self._uturn_prev_deg
+
+        # stage reward: 只在“首次跨越阈值”时给一次
+        if abs(d_lat) <= UTURN_DLAT_TH:
+            for i, phase in enumerate(ANGLE_PHASES):
+                if (not self._uturn_rewarded[i]) and (prev_deg < phase <= current_angle_deg):
+                    uturn_reward += ANGLE_REWARDS[i]
+                    self._uturn_rewarded[i] = True
+                    break  # 每步最多给一个阶段
+
+        self._uturn_prev_deg = current_angle_deg
+
+
+        return [time_cost, rs_dist_reward, dist_reward, angle_reward, box_union_reward, gear_reward, abs_dist_pen + abs_ang_pen, near_bonus, stuck_pen, risk_reward, high_speed, big_steer, uturn_reward]
         
     def get_reward(self, status, prev_state, observation):
-        reward_info = [0,0,0,0,0,0,0,0,0,0,0,0]
+        reward_info = [0,0,0,0,0,0,0,0,0,0,0,0,0]
         lidar_dist = observation['lidar'] * LIDARRANGE
         if status == Status.CONTINUE:
             reward_info = self._get_reward(prev_state, self.vehicle.state, lidar_dist)
@@ -599,7 +656,8 @@ class CarParking(gym.Env):
             'low_speed':reward_list[8],
             'risk_reward':reward_list[9],
             'high_speed':reward_list[10],
-            'big_steer':reward_list[11]})
+            'big_steer':reward_list[11],
+            'u_turn':reward_list[12]})
 
         info = OrderedDict({'reward_info':reward_info,
             'path_to_dest':None})

@@ -8,7 +8,7 @@ import numpy as np
 
 from model_interface.model.agent_base import ConfigBase, AgentBase
 from model_interface.model.network import *
-from model_interface.model.replay_memory import ReplayMemory
+from model_interface.model.replay_memory import ReplayMemory, DualReplayMemory
 from model_interface.model.state_norm import StateNorm
 from env.action_mask import ActionMask
 from utils.config import Configuration
@@ -219,7 +219,8 @@ class SACConfig(ConfigBase):
         self.mini_epoch = 1
         self.initial_temperature = 0.01
         self.action_dim = 2
-        self.target_entropy = self.action_dim *(-1.0)
+        self.target_entropy = self.action_dim *(-0.4)
+        self.kl_beta = 0.2
 
         # tricks
         self.learn_temperature = True
@@ -252,7 +253,26 @@ class SACAgent(AgentBase):
 
         # As a on-policy RL algorithm, PPO does not have memory, the self.memory represents
         # the buffer
-        self.memory = ReplayMemory(self.configs.memory_size, ["log_prob","next_obs", "predict_pose_list", "seg_done"])
+        # self.memory = ReplayMemory(self.configs.memory_size, ["log_prob","next_obs", "predict_pose_list", "seg_done"])
+
+        extra_items = ["log_prob", "next_obs", "predict_pose_list", "seg_done"]
+
+        # 成功 buffer 容量：主 buffer 的 20%（你可以调大，比如 30%）
+        success_buf_size = max(1, int(self.configs.memory_size * 0.3))
+
+        # 采样时成功样本占比：比如 30%（你可以调到 0.4~0.6）
+        success_sample_ratio = 0.3
+
+        self.memory = DualReplayMemory(
+            memory_size=self.configs.memory_size,
+            success_memory_size=success_buf_size,
+            extra_items=extra_items,
+            success_ratio=success_sample_ratio,
+        )
+
+        # episode 暂存（关键：用于把“整段成功轨迹”都放进 success buffer）
+        self._ep_cache = []
+        self._ep_success = False
 
         # tricks
         if self.configs.state_norm:
@@ -423,6 +443,21 @@ class SACAgent(AgentBase):
         ]
 
 
+    def _policy_kl_u_space(self, mu_new, logstd_new, mu_old, logstd_old):
+        """
+        KL( N_new || N_old )，逐维求和后取 batch mean
+        输入 shape: [B, action_dim]
+        """
+        # std_new = torch.exp(logstd_new)
+        # std_old = torch.exp(logstd_old)
+
+        # # KL for diagonal Gaussians
+        # kl_per_dim = (logstd_old - logstd_new) + (std_new.pow(2) + (mu_new - mu_old).pow(2)) / (2.0 * std_old.pow(2)) - 0.5
+        # kl = kl_per_dim.sum(dim=-1).mean()
+        kl = ((mu_new - mu_old) ** 2).sum(dim=-1).mean()
+        return kl
+
+
 
     def _actor_forward(self, obs, predict_pose_list) -> torch.distributions.Distribution:
         observation = deepcopy(obs)
@@ -563,12 +598,53 @@ class SACAgent(AgentBase):
         # return scalar
         return float(log_prob.detach().cpu().item())
 
-    def push_memory(self, observations):
-        '''
-        Args:
+    # def push_memory(self, observations):
+    #     '''
+    #     Args:
       
-        '''
-        obs, action, reward, done, log_prob, next_obs, pose_seq_cpu, seg_done = observations
+    #     '''
+    #     obs, action, reward, done, log_prob, next_obs, pose_seq_cpu, seg_done = observations
+
+    #     obs2, action2, reward2, done2, log_prob2, next_obs2, seg_done2 = deepcopy(
+    #         (obs, action, reward, done, log_prob, next_obs, seg_done)
+    #     )
+
+    #     if self.configs.state_norm:
+    #         obs2 = self.state_normalize.state_norm(obs2)
+    #         next_obs2 = self.state_normalize.state_norm(next_obs2, update=True)
+
+    #     #     # ====== schema 校验：保证 obs/next_obs key 一致 ======
+    #     # REQUIRED_KEYS = ("target", "action_mask", "image", "lidar", "park_target_point")  # 你至少需要这两个；按你 obs2tensor 需求补齐
+    #     # # 如果你 obs2tensor 里还有别的 key（比如 'state','bev','lidar'...），也加进来
+
+    #     # def _check_obs_schema(o, name: str):
+    #     #     missing = [k for k in REQUIRED_KEYS if k not in o]
+    #     #     if missing:
+    #     #         # 打印足够的信息定位是哪种场景的数据
+    #     #         keys = list(o.keys())
+    #     #         raise KeyError(
+    #     #             f"[MEM] {name} missing keys={missing}. "
+    #     #             f"available_keys={keys}. "
+    #     #             f"done={done2}, seg_done={seg_done2}, reward={reward2}"
+    #     #         )
+
+    #     # _check_obs_schema(obs2, "obs")
+    #     # _check_obs_schema(next_obs2, "next_obs")
+
+    #     self.memory.push((obs2, action2, reward2, done2, log_prob2, next_obs2, pose_seq_cpu, seg_done2))
+
+    def push_memory(self, observations):
+        """
+        observations:
+        旧版: (obs, action, reward, done, log_prob, next_obs, pose_seq_cpu, seg_done)
+        新版: (obs, action, reward, done, log_prob, next_obs, pose_seq_cpu, seg_done, success_flag)
+        """
+        # 兼容老调用
+        if len(observations) == 9:
+            obs, action, reward, done, log_prob, next_obs, pose_seq_cpu, seg_done, success_flag = observations
+        else:
+            obs, action, reward, done, log_prob, next_obs, pose_seq_cpu, seg_done = observations
+            success_flag = False
 
         obs2, action2, reward2, done2, log_prob2, next_obs2, seg_done2 = deepcopy(
             (obs, action, reward, done, log_prob, next_obs, seg_done)
@@ -578,25 +654,29 @@ class SACAgent(AgentBase):
             obs2 = self.state_normalize.state_norm(obs2)
             next_obs2 = self.state_normalize.state_norm(next_obs2, update=True)
 
-        #     # ====== schema 校验：保证 obs/next_obs key 一致 ======
-        # REQUIRED_KEYS = ("target", "action_mask", "image", "lidar", "park_target_point")  # 你至少需要这两个；按你 obs2tensor 需求补齐
-        # # 如果你 obs2tensor 里还有别的 key（比如 'state','bev','lidar'...），也加进来
+        # 先把 transition 放进 episode cache（不立刻进 replay）
+        tr = (obs2, action2, reward2, done2, log_prob2, next_obs2, pose_seq_cpu, seg_done2)
+        self._ep_cache.append(tr)
 
-        # def _check_obs_schema(o, name: str):
-        #     missing = [k for k in REQUIRED_KEYS if k not in o]
-        #     if missing:
-        #         # 打印足够的信息定位是哪种场景的数据
-        #         keys = list(o.keys())
-        #         raise KeyError(
-        #             f"[MEM] {name} missing keys={missing}. "
-        #             f"available_keys={keys}. "
-        #             f"done={done2}, seg_done={seg_done2}, reward={reward2}"
-        #         )
+        # 如果这一集最终成功（通常只在 terminal step 才会传 True），记一下
+        if bool(success_flag):
+            self._ep_success = True
 
-        # _check_obs_schema(obs2, "obs")
-        # _check_obs_schema(next_obs2, "next_obs")
+        # episode 结束：flush
+        # 注意：你这里 episode 的定义是 env 的 done，而不是 seg_done（seg_done 是你 regressive 分段）
+        if done2:
+            # 1) 全部写入主 buffer
+            for t in self._ep_cache:
+                self.memory.push(t)
 
-        self.memory.push((obs2, action2, reward2, done2, log_prob2, next_obs2, pose_seq_cpu, seg_done2))
+            # 2) 若该 episode 成功，把整段轨迹也写入 success buffer
+            if self._ep_success:
+                for t in self._ep_cache:
+                    self.memory.push_success(t)
+
+            # 3) 清空 episode cache
+            self._ep_cache.clear()
+            self._ep_success = False
 
     def _reward_norm(self, reward):
         return (reward - reward.mean()) / (reward.std() + 1e-8)
@@ -785,7 +865,7 @@ class SACAgent(AgentBase):
         ]:
             _freeze_embed_img_of(m)
 
-    def update(self, step):
+    def update(self, step, i):
         for _ in range(self.configs.mini_epoch):
             batches = self.memory.sample(self.configs.batch_size)
             state_batch = self.obs2tensor(batches["state"])
@@ -909,9 +989,27 @@ class SACAgent(AgentBase):
                 # policy loss
                 action_, log_prob = self._get_action_and_log_prob(state_batch, tgt_train, len_curr, step)
 
+                b = self._unwrap(self.bundle)
+                encoder_out, point_out = b.encode_actor_obs(state_batch)
+                _, _, policy_dist = b.actor_net(encoder_out, point_out, tgt_train, len_curr)
+                mu_new = policy_dist
+                logstd_new = torch.clamp(b.log_std.expand_as(mu_new), -6.0, 0.0)
+                with torch.no_grad():
+                    tb = self.teacher_bundle  # already unwrapped & frozen
+                    enc_old = tb.actor_encoder(state_batch)
+                    pt_old  = tb.actor_point_encoder(state_batch["park_target_point"])
+                    _, _, policy_old = tb.actor_net(enc_old, pt_old, tgt_train, len_curr)
+                    mu_old = policy_old
+                    logstd_old = torch.clamp(tb.log_std.expand_as(mu_old), -6.0, 0.0)
+
+
+
                 q1_value = self._q1_forward(state_batch, action_, tgt_train, len_curr)
                 q2_value = self._q2_forward(state_batch, action_, tgt_train, len_curr)
-                actor_loss = (self.alpha.detach() * log_prob - torch.min(q1_value, q2_value)).mean()
+                sac_loss = (self.alpha.detach() * log_prob - torch.min(q1_value, q2_value)).mean()
+                kl = self._policy_kl_u_space(mu_new, logstd_new, mu_old, logstd_old)
+                kl_beta = self.configs.kl_beta * (max(0,1-i/3000))
+                actor_loss = sac_loss + kl_beta * kl
 
                 # update actor
                 self.actor_optimizer.zero_grad()
@@ -922,7 +1020,7 @@ class SACAgent(AgentBase):
             # optimize alpha
             if self.configs.learn_temperature:
                 alpha_loss = (self.log_alpha * (-log_prob - self.configs.target_entropy).detach()).mean()
-                self.log_alpha_optimizer.zero_grad()
+                self.log_alpha_optimizer.zero_grad() 
                 alpha_loss.backward()
                 self.log_alpha_optimizer.step()
 
@@ -984,6 +1082,7 @@ class SACAgent(AgentBase):
                         "action_std_speed": action_[:,1].std().item(),
                         "action_mean_steer": action_[:,0].mean().item(),
                         "action_mean_speed": action_[:,1].mean().item(),
+                        "kl_pi_new_old": kl.detach().mean().item()
                     }
                     print("========== TRAIN LOG ==========")
                     for k, v in log.items():
@@ -1131,6 +1230,12 @@ class SACAgent(AgentBase):
 
         if getattr(self, "verbose", False):
             print(f"Load the model from {path}")
+
+
+        self.teacher_bundle = deepcopy(self._unwrap(self.bundle)).to(self.device)
+        for p in self.teacher_bundle.parameters():
+            p.requires_grad = False
+        self.teacher_bundle.eval()
 
 
     def set_start_traj_point(self, start_traj_point_np: np.ndarray):
