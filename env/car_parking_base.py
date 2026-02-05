@@ -544,8 +544,8 @@ class CarParking(gym.Env):
 
         # ---- tunable thresholds ----
         # 阶段式奖励的角度阶段
-        ANGLE_PHASES = [90, 120]  # 角度阶段，单位：度
-        ANGLE_REWARDS = [5, 10]  # 对应的奖励数值
+        ANGLE_PHASES = [20, 40, 60, 90, 120]  # 角度阶段，单位：度
+        ANGLE_REWARDS = [5,  5,  5, 7, 10]  # 对应的奖励数值
         UTURN_DLAT_TH = 10.0  # |d_lat| 阈值（米）
 
         def _wrap_pi(a: float) -> float:
@@ -784,8 +784,8 @@ class CarParking(gym.Env):
         return None
     
     def is_traj_valid(self, traj):
-        car_coords1 = np.array(VehicleBox.coords)[:4] # (4,2)
-        car_coords2 = np.array(VehicleBox.coords)[1:] # (4,2)
+        car_coords1 = np.array(VehicleBoxRS.coords)[:4] # (4,2)
+        car_coords2 = np.array(VehicleBoxRS.coords)[1:] # (4,2)
         car_coords_x1 = car_coords1[:,0].reshape(1,-1)
         car_coords_y1 = car_coords1[:,1].reshape(1,-1) # (1,4)
         car_coords_x2 = car_coords2[:,0].reshape(1,-1)

@@ -255,11 +255,10 @@ class DlpCaseChoose():
 if __name__=="__main__":
 
     parser = argparse.ArgumentParser()
-    
-    parser.add_argument('--agent_ckpt', type=str, default='./rl_model/SAC2_2999.pt') # './model/ckpt/SAC.pt'
+    parser.add_argument('--agent_ckpt', type=str, default='./rl_model/SAC2_6999.pt') # './model/ckpt/SAC.pt'
     parser.add_argument('--img_ckpt', type=str, default='./model/ckpt/autoencoder.pt')
     parser.add_argument('--train_episode', type=int, default=100000)
-    parser.add_argument('--eval_episode', type=int, default=10)
+    parser.add_argument('--eval_episode', type=int, default=20)
     parser.add_argument('--verbose', type=bool, default=True)
     parser.add_argument('--visualize', type=bool, default=True)
     parser.add_argument('--config', default='./config/training_real.yaml', type=str)
@@ -357,12 +356,12 @@ if __name__=="__main__":
     regressive_step = REGRESSIVE_STEP
 
     def rs_mix_prob(episode: int) -> float:
-        start_episode = 1000
-        end_episode = 30000
-        start_p = 0.0
-        end_p = 0.0
+        start_episode = 10000
+        end_episode = 50000
+        start_p = 1.0
+        end_p = 0.1
         if episode < start_episode:
-            return 0.0
+            return 1.1
         if episode >= end_episode:
             return end_p
 
@@ -420,15 +419,16 @@ if __name__=="__main__":
         macro = None
         warmup_steps = int(parking_agent.configs.memory_size * 1.3)  # 你要的阈值
         p_macro = 0.95       # warmup阶段选macro的概率（你自己调）
-        hold_min = 10       # 模式最短保持步数
+        hold_min = 6       # 模式最短保持步数
         hold_max = 30       # 模式最长保持步数
         macro_period = 7    # macro刷新周期（保持你原来习惯）
         clip_macro = 0.9
         clip_policy = 0.95
+        step_num_threshold = np.random.randint(10, 60)
         while not done:
             step_num += 1
             total_step_num += 1
-            if (step_num >= 50) and (total_step_num <= warmup_steps) and (not parking_agent.executing_rs):
+            if (step_num >= step_num_threshold) and (total_step_num <= warmup_steps) and (not parking_agent.executing_rs):
                 # --- 1) decide / refresh mode only when expired ---
                 if mode_left <= 0:
                     # 按概率选模式
@@ -455,7 +455,7 @@ if __name__=="__main__":
 
             else:
                 # warmup结束 or 正在执行RS：保持你原来的逻辑
-                if step_num < 50 and (total_step_num <= warmup_steps):
+                if step_num < step_num_threshold and (total_step_num <= warmup_steps):
                     action_raw, log_prob = parking_agent.choose_action_eval(obs, predict_pose_list)
                 else:
                     action_raw, log_prob = parking_agent.get_action(obs, predict_pose_list)
@@ -498,8 +498,8 @@ if __name__=="__main__":
             # 退火混合：rs_path_avail 时才抽样是否执行 RS
             if rs_path_avail:
                 p_rs = rs_mix_prob(i)
-                # use_rs = (np.random.random() < p_rs)
-                use_rs = True
+                use_rs = (np.random.random() < p_rs)
+                # use_rs = True
             else:
                 p_rs = 0.0
                 use_rs = False

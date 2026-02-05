@@ -26,6 +26,11 @@ VehicleBox = LinearRing([
     (FRONT_HANG + WHEEL_BASE, -WIDTH/2), 
     (FRONT_HANG + WHEEL_BASE,  WIDTH/2),
     (-REAR_HANG,  WIDTH/2)])
+VehicleBoxRS = LinearRing([
+    (-(REAR_HANG+0.1), -(WIDTH+0.2)/2), 
+    ((FRONT_HANG+0.1) + WHEEL_BASE, -(WIDTH+0.2)/2), 
+    ((FRONT_HANG+0.1) + WHEEL_BASE,  (WIDTH+0.2)/2),
+    (-(REAR_HANG+0.1),  (WIDTH+0.2)/2)])
 
 VALID_SPEED = [-2.5, 2.5]
 VALID_STEER = [-0.62, 0.62]
@@ -173,7 +178,7 @@ N_OBSTACLE_DICT = {
 # Normal level
 MIN_DIST_TO_OBST = 0.1
 MAX_DRIVE_DISTANCE = 15.0
-DROUP_OUT_OBST = 0.0
+DROUP_OUT_OBST = 0.1
 
 #########################
 

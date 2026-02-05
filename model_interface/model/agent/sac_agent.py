@@ -219,7 +219,7 @@ class SACConfig(ConfigBase):
         self.mini_epoch = 1
         self.initial_temperature = 0.01
         self.action_dim = 2
-        self.target_entropy = self.action_dim *(-0.4)
+        self.target_entropy = self.action_dim *(-0.8)
         self.kl_beta = 0.2
 
         # tricks
