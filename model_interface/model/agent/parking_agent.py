@@ -183,8 +183,8 @@ class ParkingAgent(object):
         pred_point = np.stack([x_next_norm, y_next_norm, cos_next, sin_next], axis=-1).reshape(4,)  # [B,4]
         return pred_point
             
-    def push_memory(self, experience):
-        self.agent.push_memory(experience)
+    def push_memory(self, experience, actor_id: int = 0):
+        self.agent.push_memory(experience, actor_id=actor_id)
 
     def update(self, step, i):
         return self.agent.update(step, i)

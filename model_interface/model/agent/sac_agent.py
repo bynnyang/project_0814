@@ -20,6 +20,10 @@ from typing import Dict, List, Tuple, Optional
 import torch.distributed as dist_gpu
 from torch.nn.utils.rnn import pad_sequence
 from contextlib import contextmanager
+from collections import defaultdict
+import threading
+import time
+
 
 
 @contextmanager
@@ -213,8 +217,8 @@ class SACConfig(ConfigBase):
         self.adam_epsilon = 1e-8
         self.dist_type = "gaussian"
         self.hidden_size = 256
-        self.memory_size = 30000
-        self.batch_size = 64
+        self.memory_size = 400
+        self.batch_size = 32
         # self.mini_batch_size = 32
         self.mini_epoch = 1
         self.initial_temperature = 0.01
@@ -234,7 +238,7 @@ class SACConfig(ConfigBase):
 class SACAgent(AgentBase):
     def __init__(
         self, config_obj: Configuration, configs: dict, discrete: bool = False, verbose: bool = False,
-        save_params: bool = False, load_params: bool = False
+        save_params: bool = False, load_params: bool = False, force_device: Optional[str] = None, init_memory: bool = True
     ) -> None:
 
         super().__init__(SACConfig, configs, verbose, save_params, load_params)
@@ -242,6 +246,9 @@ class SACAgent(AgentBase):
         self.action_filter = ActionMask()
         self.cfg = config_obj
         self.cfg.device = self.device
+        if force_device is not None:
+            self.cfg.device = torch.device(force_device)
+            self.device = torch.device(force_device)
 
         # debug
         self.actor_loss_list = []
@@ -263,20 +270,23 @@ class SACAgent(AgentBase):
         # 采样时成功样本占比：比如 30%（你可以调到 0.4~0.6）
         success_sample_ratio = 0.3
 
-        self.memory = DualReplayMemory(
-            memory_size=self.configs.memory_size,
-            success_memory_size=success_buf_size,
-            extra_items=extra_items,
-            success_ratio=success_sample_ratio,
-        )
+        if init_memory:
+            self.memory = DualReplayMemory(
+                memory_size=self.configs.memory_size,
+                success_memory_size=success_buf_size,
+                extra_items=extra_items,
+                success_ratio=success_sample_ratio,
+            )
 
-        # episode 暂存（关键：用于把“整段成功轨迹”都放进 success buffer）
-        self._ep_cache = []
-        self._ep_success = False
+            # episode 暂存（关键：用于把“整段成功轨迹”都放进 success buffer）
+            self._ep_cache   = defaultdict(list)   # actor_id -> transitions
+            self._ep_success = defaultdict(bool)   # actor_id -> bool
 
         # tricks
         if self.configs.state_norm:
             self.state_normalize = StateNorm(self.configs.observation_shape)
+
+        self._replay_lock = threading.Lock()
 
 
     def _unwrap(self, m):
@@ -633,7 +643,7 @@ class SACAgent(AgentBase):
 
     #     self.memory.push((obs2, action2, reward2, done2, log_prob2, next_obs2, pose_seq_cpu, seg_done2))
 
-    def push_memory(self, observations):
+    def push_memory(self, observations, actor_id: int = 0):
         """
         observations:
         旧版: (obs, action, reward, done, log_prob, next_obs, pose_seq_cpu, seg_done)
@@ -656,27 +666,28 @@ class SACAgent(AgentBase):
 
         # 先把 transition 放进 episode cache（不立刻进 replay）
         tr = (obs2, action2, reward2, done2, log_prob2, next_obs2, pose_seq_cpu, seg_done2)
-        self._ep_cache.append(tr)
+        self._ep_cache[actor_id].append(tr)
 
         # 如果这一集最终成功（通常只在 terminal step 才会传 True），记一下
         if bool(success_flag):
-            self._ep_success = True
+            self._ep_success[actor_id] = True
 
         # episode 结束：flush
         # 注意：你这里 episode 的定义是 env 的 done，而不是 seg_done（seg_done 是你 regressive 分段）
         if done2:
-            # 1) 全部写入主 buffer
-            for t in self._ep_cache:
-                self.memory.push(t)
+            with self._replay_lock:
+                # 1) 全部写入主 buffer
+                for t in self._ep_cache[actor_id]:
+                    self.memory.push(t)
 
-            # 2) 若该 episode 成功，把整段轨迹也写入 success buffer
-            if self._ep_success:
-                for t in self._ep_cache:
-                    self.memory.push_success(t)
+                # 2) 若该 episode 成功，把整段轨迹也写入 success buffer
+                if self._ep_success[actor_id]:
+                    for t in self._ep_cache[actor_id]:
+                        self.memory.push_success(t)
 
-            # 3) 清空 episode cache
-            self._ep_cache.clear()
-            self._ep_success = False
+                # 3) 清空 episode cache
+                self._ep_cache[actor_id].clear()
+                self._ep_success[actor_id] = False
 
     def _reward_norm(self, reward):
         return (reward - reward.mean()) / (reward.std() + 1e-8)
@@ -687,48 +698,84 @@ class SACAgent(AgentBase):
         use_cuda = (device.type == "cuda")
         nb = (non_blocking and use_cuda)
 
-        def _cpu_tensor_from_value(v, expect_uint8=False):
-            # numpy / list
-            if expect_uint8:
-                a = np.asarray(v, dtype=np.uint8)
-            else:
-                a = np.asarray(v, dtype=np.float32)
-            return torch.from_numpy(a).contiguous()  # CPU
-
         def _to_device(t_cpu: torch.Tensor):
             if pin and use_cuda:
                 t_cpu = t_cpu.pin_memory()
             return t_cpu.to(device, non_blocking=nb)
+        
+
+        def _stack_to_tensor_fast(obs_list, k, dtype):
+            """
+            fast path: np.stack -> torch.from_numpy once
+            return: torch.Tensor on CPU
+            """
+            # 注意：这里假设 obs_list[i][k] 都是 numpy / list 且 shape 一致
+            arr = np.stack([o[k] for o in obs_list], axis=0)      # [B,...]
+            # dtype 转换尽量不拷贝
+            arr = arr.astype(dtype, copy=False)
+            # 确保内存连续，torch.from_numpy 才不会额外复制
+            if not arr.flags["C_CONTIGUOUS"]:
+                arr = np.ascontiguousarray(arr)
+            return torch.from_numpy(arr)  # CPU
+
+        def _cpu_tensor_from_value(v, expect_uint8=False):
+            # fallback path（你原来的逐样本逻辑）
+            if expect_uint8:
+                a = np.asarray(v, dtype=np.uint8)
+            else:
+                a = np.asarray(v, dtype=np.float32)
+            if not a.flags["C_CONTIGUOUS"]:
+                a = np.ascontiguousarray(a)
+            return torch.from_numpy(a)
 
         out = {}
 
         if isinstance(obs, list):
-            # batch path
+            # ===== batch path =====
             for k in keys:
                 if k == "image":
-                    ts = [_cpu_tensor_from_value(o[k], expect_uint8=True) for o in obs]
-                    batch_cpu = torch.stack(ts, dim=0).contiguous()          # [B,...] uint8 CPU
-                    batch = _to_device(batch_cpu)                            # uint8 GPU
+                    # ---- fast path ----
+                    try:
+                        batch_cpu = _stack_to_tensor_fast(obs, k, np.uint8)      # uint8 CPU, [B,...]
+                    except Exception:
+                        # ---- fallback ----
+                        ts = [_cpu_tensor_from_value(o[k], expect_uint8=True) for o in obs]
+                        batch_cpu = torch.stack(ts, dim=0).contiguous()
+
+                    batch = _to_device(batch_cpu)                                # uint8 GPU/CPU
                     if normalize_image:
-                        batch = batch.float().div_(255.0)                    # float32 GPU in-place
+                        batch = batch.float().div_(255.0)                         # float32, in-place
                     out[k] = batch
                 else:
-                    ts = [_cpu_tensor_from_value(o[k], expect_uint8=False) for o in obs]
-                    batch_cpu = torch.stack(ts, dim=0).contiguous()          # [B,...] float32 CPU
-                    out[k] = _to_device(batch_cpu)                           # float32 GPU
+                    # ---- fast path ----
+                    try:
+                        batch_cpu = _stack_to_tensor_fast(obs, k, np.float32)     # float32 CPU, [B,...]
+                    except Exception:
+                        # ---- fallback ----
+                        ts = [_cpu_tensor_from_value(o[k], expect_uint8=False) for o in obs]
+                        batch_cpu = torch.stack(ts, dim=0).contiguous()
+
+                    out[k] = _to_device(batch_cpu)                                # float32 GPU/CPU
+
             return out
 
         elif isinstance(obs, dict):
-            # single path
+            # ===== single path =====
             for k in keys:
                 if k == "image":
-                    t_cpu = _cpu_tensor_from_value(obs[k], expect_uint8=True).unsqueeze(0)  # [1,...] uint8
+                    a = np.asarray(obs[k], dtype=np.uint8)
+                    if not a.flags["C_CONTIGUOUS"]:
+                        a = np.ascontiguousarray(a)
+                    t_cpu = torch.from_numpy(a).unsqueeze(0)                      # [1,...] uint8
                     t = _to_device(t_cpu)
                     if normalize_image:
                         t = t.float().div_(255.0)
                     out[k] = t
                 else:
-                    t_cpu = _cpu_tensor_from_value(obs[k], expect_uint8=False).unsqueeze(0) # [1,...] float32
+                    a = np.asarray(obs[k], dtype=np.float32)
+                    if not a.flags["C_CONTIGUOUS"]:
+                        a = np.ascontiguousarray(a)
+                    t_cpu = torch.from_numpy(a).unsqueeze(0)                      # [1,...] float32
                     out[k] = _to_device(t_cpu)
             return out
 
@@ -747,7 +794,7 @@ class SACAgent(AgentBase):
     def alpha(self):
         return self.log_alpha.exp()
     
-    def _get_action_and_log_prob(self, obs, gt_traj_point_batch, length_batch, step):
+    def _get_action_and_log_prob(self, obs, gt_traj_point_batch, length_batch, step, return_mu_logstd: bool = False):
         observation = obs
         b = self._unwrap(self.bundle)
         encoder_out, point_out = b.encode_actor_obs(observation)
@@ -791,6 +838,8 @@ class SACAgent(AgentBase):
                 for k, v in log.items():
                     print(f"{k}: {v:.6f}")
                 print("=======================")
+        if return_mu_logstd:
+            return action_batch, log_prob, mean_u, log_std
         return action_batch, log_prob
     
 
@@ -866,9 +915,44 @@ class SACAgent(AgentBase):
             _freeze_embed_img_of(m)
 
     def update(self, step, i):
+
+        device = self.device
+        is_cuda = (device.type == "cuda")
+
+        def _sync():
+            if is_cuda:
+                torch.cuda.synchronize(device)
+
+        def _tic():
+            _sync()
+            return time.perf_counter()
+
+        def _toc_ms(t0):
+            _sync()
+            return (time.perf_counter() - t0) * 1000.0
+
+        # 累计到 self 上，做滑动均值打印（避免每次都刷屏）
+        if not hasattr(self, "_upd_perf_sum"):
+            self._upd_perf_sum = defaultdict(float)
+            self._upd_perf_n = 0
+
         for _ in range(self.configs.mini_epoch):
-            batches = self.memory.sample(self.configs.batch_size)
+            t_total = _tic()
+            dt = {}
+
+            # -------- 1) sample batch --------
+            t = _tic()
+            with self._replay_lock:
+                batches = self.memory.sample(self.configs.batch_size)
+            dt["sample"] = _toc_ms(t)
+
+            # -------- 2) obs / next_obs -> tensor（通常很可能是大头）--------
+            t = _tic()
+           
             state_batch = self.obs2tensor(batches["state"])
+            next_state_batch = self.obs2tensor(batches["next_obs"])
+            dt["obs2tensor"] = _toc_ms(t)
+            t = _tic()
             action_np = np.asarray(batches["action"], dtype=np.float32)
             action_batch = torch.from_numpy(action_np).to(self.device)
             reward_np = np.asarray(batches["reward"], dtype=np.float32).reshape(-1, 1)
@@ -879,6 +963,7 @@ class SACAgent(AgentBase):
             next_state_batch = self.obs2tensor(batches["next_obs"])
             seg_done_np = np.asarray(batches["seg_done"], dtype=np.float32).reshape(-1, 1)
             seg_done_batch = torch.from_numpy(seg_done_np).to(self.device)  # [B,1] 0/1
+            dt["to_tensor"] = _toc_ms(t)
             PAD_TOKEN = 602.0
             # def pad_pose_seqs(pose_seqs, pad_token, device):
             #     ts = []
@@ -920,19 +1005,24 @@ class SACAgent(AgentBase):
                 lengths = lengths_cpu.to(device, non_blocking=True)
                 return tgt, lengths
             
+            t = _tic()
             pose_seqs = batches["predict_pose_list"]
             gt_traj_point_batch, length_batch = pad_pose_seqs_cpu_then_to_gpu(pose_seqs, PAD_TOKEN, self.device)
+            dt["pad_pose"] = _toc_ms(t)
 
             # 0) 固定模式：online train、target eval
+            t = _tic()
             b = self._unwrap(self.bundle)
             self._set_train_mode()
 
             # 1) 永久冻结模块强制 eval（防 BN/Dropout 漂）
             self._keep_frozen_embed_img_eval()
+            dt["set_mode"] = _toc_ms(t)
 
             if self.start_traj_point_np is None:
                 raise RuntimeError("start_traj_point_np is None. Call set_start_traj_point() in train script first.")
             
+            t = _tic()
             tgt_next = gt_traj_point_batch.clone()        # [B,T,4]
             len_next = length_batch.clone()               # [B]
             next_state_for_td = {k: v.clone() for k, v in state_batch.items()}  # 独立副本
@@ -952,8 +1042,10 @@ class SACAgent(AgentBase):
                 tgt_next[idx, :, :] = PAD_TOKEN
                 tgt_next[idx, 0, :] = start
                 len_next[idx] = 1
+            dt["boundary_reset"] = _toc_ms(t)
             
             # soft Q loss
+            t = _tic()
             with torch.no_grad():
                 with temporary_eval(b.actor_encoder, b.actor_point_encoder, b.actor_net):
                     next_action_batch, next_log_prob = self._get_action_and_log_prob(next_state_for_td, tgt_next, len_next, 1)
@@ -963,6 +1055,9 @@ class SACAgent(AgentBase):
                     torch.min(q1_target, q2_target) - self.alpha.detach() * next_log_prob
                 )
 
+            dt["target_q"] = _toc_ms(t)
+
+            t = _tic()
             tgt_train = gt_traj_point_batch
             len_curr = (length_batch - 1).clamp(min=1) 
 
@@ -971,14 +1066,21 @@ class SACAgent(AgentBase):
 
             q1_loss = F.mse_loss(current_q1, q_target.detach())
             q2_loss = F.mse_loss(current_q2, q_target.detach())
+            dt["critic_fwd"] = _toc_ms(t)
 
             # update the critic networks
+            t = _tic()
             self.critic_optimizer1.zero_grad()
             q1_loss.backward()
             self.critic_optimizer1.step()
+            dt["q1_bwd_step"] = _toc_ms(t)
+            t = _tic()
             self.critic_optimizer2.zero_grad()
             q2_loss.backward()
             self.critic_optimizer2.step()
+            dt["q2_bwd_step"] = _toc_ms(t)
+
+            t = _tic()
 
             q1_parts = [b.q1_encoder, b.q1_point_encoder, b.q1_net]
             q2_parts = [b.q2_encoder, b.q2_point_encoder, b.q2_net]
@@ -987,28 +1089,27 @@ class SACAgent(AgentBase):
             with temporary_freeze_modules(q1_parts + q2_parts),temporary_eval(b.q1_encoder, b.q1_point_encoder, b.q1_net,
                                                                   b.q2_encoder, b.q2_point_encoder, b.q2_net):
                 # policy loss
-                action_, log_prob = self._get_action_and_log_prob(state_batch, tgt_train, len_curr, step)
+                action_, log_prob, mu_new, logstd_new  = self._get_action_and_log_prob(state_batch, tgt_train, len_curr, step, return_mu_logstd=True)
 
-                b = self._unwrap(self.bundle)
-                encoder_out, point_out = b.encode_actor_obs(state_batch)
-                _, _, policy_dist = b.actor_net(encoder_out, point_out, tgt_train, len_curr)
-                mu_new = policy_dist
-                logstd_new = torch.clamp(b.log_std.expand_as(mu_new), -6.0, 0.0)
-                with torch.no_grad():
-                    tb = self.teacher_bundle  # already unwrapped & frozen
-                    enc_old = tb.actor_encoder(state_batch)
-                    pt_old  = tb.actor_point_encoder(state_batch["park_target_point"])
-                    _, _, policy_old = tb.actor_net(enc_old, pt_old, tgt_train, len_curr)
-                    mu_old = policy_old
-                    logstd_old = torch.clamp(tb.log_std.expand_as(mu_old), -6.0, 0.0)
+                # b = self._unwrap(self.bundle)
+                # encoder_out, point_out = b.encode_actor_obs(state_batch)
+                # _, _, policy_dist = b.actor_net(encoder_out, point_out, tgt_train, len_curr)
+                kl_beta = self.configs.kl_beta * (max(0, 1 - i / 3000 / 4))
 
-
-
+                if kl_beta > 0.01:
+                    with torch.no_grad():
+                        tb = self.teacher_bundle  # already unwrapped & frozen
+                        enc_old = tb.actor_encoder(state_batch)
+                        pt_old  = tb.actor_point_encoder(state_batch["park_target_point"])
+                        _, _, policy_old = tb.actor_net(enc_old, pt_old, tgt_train, len_curr)
+                        mu_old = policy_old
+                        logstd_old = torch.clamp(tb.log_std.expand_as(mu_old), -6.0, 0.0)
+                    kl = self._policy_kl_u_space(mu_new, logstd_new, mu_old, logstd_old)
+                else:
+                    kl = 0.0
                 q1_value = self._q1_forward(state_batch, action_, tgt_train, len_curr)
                 q2_value = self._q2_forward(state_batch, action_, tgt_train, len_curr)
                 sac_loss = (self.alpha.detach() * log_prob - torch.min(q1_value, q2_value)).mean()
-                kl = self._policy_kl_u_space(mu_new, logstd_new, mu_old, logstd_old)
-                kl_beta = self.configs.kl_beta * (max(0,1-i/3000))
                 actor_loss = sac_loss + kl_beta * kl
 
                 # update actor
@@ -1016,13 +1117,16 @@ class SACAgent(AgentBase):
                 actor_loss.backward()
                 self.actor_optimizer.step()
                 self.actor_loss_list.append(actor_loss.mean().item())
+            dt["actor"] = _toc_ms(t)
 
             # optimize alpha
+            t = _tic()
             if self.configs.learn_temperature:
                 alpha_loss = (self.log_alpha * (-log_prob - self.configs.target_entropy).detach()).mean()
                 self.log_alpha_optimizer.zero_grad() 
                 alpha_loss.backward()
                 self.log_alpha_optimizer.step()
+            dt["alpha"] = _toc_ms(t)
 
             if step % 2000 ==0 and ((not self.distributed) or dist_gpu.get_rank() == 0):
                 def safe_grad_norm(params):
@@ -1091,6 +1195,7 @@ class SACAgent(AgentBase):
 
             # soft update target networks
             # Q1 target update
+            t = _tic()
             self._soft_update(
                 [b.q1_target_encoder, b.q1_target_point_encoder, b.q1_target_net],
                 [b.q1_encoder,        b.q1_point_encoder,        b.q1_net]
@@ -1102,6 +1207,26 @@ class SACAgent(AgentBase):
                 [b.q2_encoder,        b.q2_point_encoder,        b.q2_net]
             )
             self.critic_loss_list.append(q1_loss.mean().item())
+            dt["soft_update"] = _toc_ms(t)
+
+            dt["total"] = _toc_ms(t_total)
+
+            # ====== accumulate & print ======
+            for k, v in dt.items():
+                self._upd_perf_sum[k] += float(v)
+            self._upd_perf_n += 1
+
+            # 每 20 次 update 打印一次均值（你可以改 10/50）
+            if (self._upd_perf_n % 20 == 0) and ((not self.distributed) or dist_gpu.get_rank() == 0):
+                n = 20
+                msg = "  ".join([f"{k}={self._upd_perf_sum[k]/n:.1f}ms" for k in
+                                ["sample","obs2tensor","to_tensor","pad_pose","set_mode","boundary_reset",
+                                "target_q","critic_fwd","q1_bwd_step","q2_bwd_step","actor","alpha","soft_update","total"]
+                                if k in self._upd_perf_sum])
+                print(f"[UPD-PERF avg{n}] {msg}")
+                # 清空窗口
+                for k in list(self._upd_perf_sum.keys()):
+                    self._upd_perf_sum[k] = 0.0
 
 
         # for debug
@@ -1331,3 +1456,21 @@ class SACAgent(AgentBase):
                     print("[reset_optimizers][WARN] log_alpha not found in log_alpha_optimizer param_groups.")
 
             print(f"[reset_optimizers] done. reinit_alpha={reinit_alpha}")
+
+
+    def get_actor_state(self):
+        b = self._unwrap(self.bundle)
+        return {
+            "actor_encoder": b.actor_encoder.state_dict(),
+            "actor_point_encoder": b.actor_point_encoder.state_dict(),
+            "actor_net": b.actor_net.state_dict(),
+            "log_std": b.log_std.detach().cpu(),
+        }
+
+    def load_actor_state(self, actor_state):
+        b = self._unwrap(self.bundle)
+        b.actor_encoder.load_state_dict(actor_state["actor_encoder"], strict=True)
+        b.actor_point_encoder.load_state_dict(actor_state["actor_point_encoder"], strict=True)
+        b.actor_net.load_state_dict(actor_state["actor_net"], strict=True)
+        with torch.no_grad():
+            b.log_std.copy_(actor_state["log_std"].to(self.device))
