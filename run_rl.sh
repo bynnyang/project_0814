@@ -9,7 +9,7 @@ source /opt/ros/noetic/setup.bash
 #######################################
 # 训练参数
 #######################################
-SCRIPT=train_HOPE_sac.py
+SCRIPT=train_mp_sac.py
 # PREPARE_SCRIPT=prepare.py
 
 NUM_GPUS=1

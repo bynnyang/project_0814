@@ -217,8 +217,8 @@ class SACConfig(ConfigBase):
         self.adam_epsilon = 1e-8
         self.dist_type = "gaussian"
         self.hidden_size = 256
-        self.memory_size = 400
-        self.batch_size = 32
+        self.memory_size = 30000
+        self.batch_size = 64
         # self.mini_batch_size = 32
         self.mini_epoch = 1
         self.initial_temperature = 0.01
@@ -818,7 +818,7 @@ class SACAgent(AgentBase):
         log_prob = log_prob - torch.log(1.0 - action_batch.pow(2) + 1e-6).sum(dim=1, keepdim=True)
 
 
-        if step % 2000 == 0 and ((not self.distributed) or dist_gpu.get_rank() == 0):
+        if step % 4000 == 0 and ((not self.distributed) or dist_gpu.get_rank() == 0):
             with torch.no_grad():
                 log = {
                     # mean / std (u-space)
@@ -915,44 +915,11 @@ class SACAgent(AgentBase):
             _freeze_embed_img_of(m)
 
     def update(self, step, i):
-
-        device = self.device
-        is_cuda = (device.type == "cuda")
-
-        def _sync():
-            if is_cuda:
-                torch.cuda.synchronize(device)
-
-        def _tic():
-            _sync()
-            return time.perf_counter()
-
-        def _toc_ms(t0):
-            _sync()
-            return (time.perf_counter() - t0) * 1000.0
-
-        # 累计到 self 上，做滑动均值打印（避免每次都刷屏）
-        if not hasattr(self, "_upd_perf_sum"):
-            self._upd_perf_sum = defaultdict(float)
-            self._upd_perf_n = 0
-
         for _ in range(self.configs.mini_epoch):
-            t_total = _tic()
-            dt = {}
-
-            # -------- 1) sample batch --------
-            t = _tic()
             with self._replay_lock:
                 batches = self.memory.sample(self.configs.batch_size)
-            dt["sample"] = _toc_ms(t)
-
-            # -------- 2) obs / next_obs -> tensor（通常很可能是大头）--------
-            t = _tic()
-           
             state_batch = self.obs2tensor(batches["state"])
             next_state_batch = self.obs2tensor(batches["next_obs"])
-            dt["obs2tensor"] = _toc_ms(t)
-            t = _tic()
             action_np = np.asarray(batches["action"], dtype=np.float32)
             action_batch = torch.from_numpy(action_np).to(self.device)
             reward_np = np.asarray(batches["reward"], dtype=np.float32).reshape(-1, 1)
@@ -963,7 +930,6 @@ class SACAgent(AgentBase):
             next_state_batch = self.obs2tensor(batches["next_obs"])
             seg_done_np = np.asarray(batches["seg_done"], dtype=np.float32).reshape(-1, 1)
             seg_done_batch = torch.from_numpy(seg_done_np).to(self.device)  # [B,1] 0/1
-            dt["to_tensor"] = _toc_ms(t)
             PAD_TOKEN = 602.0
             # def pad_pose_seqs(pose_seqs, pad_token, device):
             #     ts = []
@@ -1005,24 +971,20 @@ class SACAgent(AgentBase):
                 lengths = lengths_cpu.to(device, non_blocking=True)
                 return tgt, lengths
             
-            t = _tic()
             pose_seqs = batches["predict_pose_list"]
             gt_traj_point_batch, length_batch = pad_pose_seqs_cpu_then_to_gpu(pose_seqs, PAD_TOKEN, self.device)
-            dt["pad_pose"] = _toc_ms(t)
 
             # 0) 固定模式：online train、target eval
-            t = _tic()
             b = self._unwrap(self.bundle)
             self._set_train_mode()
 
             # 1) 永久冻结模块强制 eval（防 BN/Dropout 漂）
             self._keep_frozen_embed_img_eval()
-            dt["set_mode"] = _toc_ms(t)
+            
 
             if self.start_traj_point_np is None:
                 raise RuntimeError("start_traj_point_np is None. Call set_start_traj_point() in train script first.")
             
-            t = _tic()
             tgt_next = gt_traj_point_batch.clone()        # [B,T,4]
             len_next = length_batch.clone()               # [B]
             next_state_for_td = {k: v.clone() for k, v in state_batch.items()}  # 独立副本
@@ -1042,10 +1004,8 @@ class SACAgent(AgentBase):
                 tgt_next[idx, :, :] = PAD_TOKEN
                 tgt_next[idx, 0, :] = start
                 len_next[idx] = 1
-            dt["boundary_reset"] = _toc_ms(t)
             
             # soft Q loss
-            t = _tic()
             with torch.no_grad():
                 with temporary_eval(b.actor_encoder, b.actor_point_encoder, b.actor_net):
                     next_action_batch, next_log_prob = self._get_action_and_log_prob(next_state_for_td, tgt_next, len_next, 1)
@@ -1055,9 +1015,6 @@ class SACAgent(AgentBase):
                     torch.min(q1_target, q2_target) - self.alpha.detach() * next_log_prob
                 )
 
-            dt["target_q"] = _toc_ms(t)
-
-            t = _tic()
             tgt_train = gt_traj_point_batch
             len_curr = (length_batch - 1).clamp(min=1) 
 
@@ -1066,21 +1023,16 @@ class SACAgent(AgentBase):
 
             q1_loss = F.mse_loss(current_q1, q_target.detach())
             q2_loss = F.mse_loss(current_q2, q_target.detach())
-            dt["critic_fwd"] = _toc_ms(t)
+      
 
             # update the critic networks
-            t = _tic()
+            
             self.critic_optimizer1.zero_grad()
             q1_loss.backward()
             self.critic_optimizer1.step()
-            dt["q1_bwd_step"] = _toc_ms(t)
-            t = _tic()
             self.critic_optimizer2.zero_grad()
             q2_loss.backward()
             self.critic_optimizer2.step()
-            dt["q2_bwd_step"] = _toc_ms(t)
-
-            t = _tic()
 
             q1_parts = [b.q1_encoder, b.q1_point_encoder, b.q1_net]
             q2_parts = [b.q2_encoder, b.q2_point_encoder, b.q2_net]
@@ -1094,7 +1046,7 @@ class SACAgent(AgentBase):
                 # b = self._unwrap(self.bundle)
                 # encoder_out, point_out = b.encode_actor_obs(state_batch)
                 # _, _, policy_dist = b.actor_net(encoder_out, point_out, tgt_train, len_curr)
-                kl_beta = self.configs.kl_beta * (max(0, 1 - i / 3000 / 4))
+                kl_beta = self.configs.kl_beta * (max(0, 1 - i / 3000 / 2))
 
                 if kl_beta > 0.01:
                     with torch.no_grad():
@@ -1117,18 +1069,15 @@ class SACAgent(AgentBase):
                 actor_loss.backward()
                 self.actor_optimizer.step()
                 self.actor_loss_list.append(actor_loss.mean().item())
-            dt["actor"] = _toc_ms(t)
 
             # optimize alpha
-            t = _tic()
             if self.configs.learn_temperature:
                 alpha_loss = (self.log_alpha * (-log_prob - self.configs.target_entropy).detach()).mean()
                 self.log_alpha_optimizer.zero_grad() 
                 alpha_loss.backward()
                 self.log_alpha_optimizer.step()
-            dt["alpha"] = _toc_ms(t)
 
-            if step % 2000 ==0 and ((not self.distributed) or dist_gpu.get_rank() == 0):
+            if step % 4000 ==0 and ((not self.distributed) or dist_gpu.get_rank() == 0):
                 def safe_grad_norm(params):
                     gs = [p.grad.detach().norm() for p in params if p.grad is not None]
                     return torch.norm(torch.stack(gs)).item() if len(gs) > 0 else 0.0
@@ -1195,7 +1144,6 @@ class SACAgent(AgentBase):
 
             # soft update target networks
             # Q1 target update
-            t = _tic()
             self._soft_update(
                 [b.q1_target_encoder, b.q1_target_point_encoder, b.q1_target_net],
                 [b.q1_encoder,        b.q1_point_encoder,        b.q1_net]
@@ -1207,26 +1155,6 @@ class SACAgent(AgentBase):
                 [b.q2_encoder,        b.q2_point_encoder,        b.q2_net]
             )
             self.critic_loss_list.append(q1_loss.mean().item())
-            dt["soft_update"] = _toc_ms(t)
-
-            dt["total"] = _toc_ms(t_total)
-
-            # ====== accumulate & print ======
-            for k, v in dt.items():
-                self._upd_perf_sum[k] += float(v)
-            self._upd_perf_n += 1
-
-            # 每 20 次 update 打印一次均值（你可以改 10/50）
-            if (self._upd_perf_n % 20 == 0) and ((not self.distributed) or dist_gpu.get_rank() == 0):
-                n = 20
-                msg = "  ".join([f"{k}={self._upd_perf_sum[k]/n:.1f}ms" for k in
-                                ["sample","obs2tensor","to_tensor","pad_pose","set_mode","boundary_reset",
-                                "target_q","critic_fwd","q1_bwd_step","q2_bwd_step","actor","alpha","soft_update","total"]
-                                if k in self._upd_perf_sum])
-                print(f"[UPD-PERF avg{n}] {msg}")
-                # 清空窗口
-                for k in list(self._upd_perf_sum.keys()):
-                    self._upd_perf_sum[k] = 0.0
 
 
         # for debug

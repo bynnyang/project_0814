@@ -24,6 +24,7 @@ import threading
 import torch.multiprocessing as mp
 from queue import Empty
 from collections import defaultdict
+import queue
 
 
 
@@ -292,7 +293,7 @@ def actor_worker(
     regressive_step = REGRESSIVE_STEP
     local_episode = 0
     total_step_num = 0
-    warmup_steps = int(configs.get("memory_size", 30000) * 1.3)
+    warmup_steps = int(configs.get("memory_size", 30000) * 1.3 / 2.0)
 
     while not stop_event.is_set():
         local_episode += 1
@@ -315,6 +316,7 @@ def actor_worker(
 
         done = False
         step_num = 0
+        reward_info_step_list = []
         predict_pose_list = [start_traj_point_np]
 
         # warmup mode 相关变量（照你原逻辑拷贝）
@@ -329,18 +331,12 @@ def actor_worker(
 
         total_reward = 0.0
         success = 0
-        t_action = 0.0
-        t_env = 0.0
-        t_put = 0.0
-        steps_acc = 0
-        REPORT_EVERY_STEPS = 200
 
         while not done and not stop_event.is_set():
             step_num += 1
             total_step_num += 1
 
             # -------- 选 action（基本照你原训练脚本）--------
-            ta0 = time.perf_counter()
             if (step_num >= step_num_threshold) and (total_step_num <= warmup_steps) and (not parking_agent.executing_rs):
                 if mode_left <= 0:
                     mode = "macro" if np.random.rand() < p_macro else "policy"
@@ -361,13 +357,11 @@ def actor_worker(
                 else:
                     action_raw, log_prob = parking_agent.get_action(obs, predict_pose_list)
                 action = action_raw if parking_agent.executing_rs else np.clip(action_raw, -clip_policy, clip_policy)
-            ta1 = time.perf_counter()
 
             next_obs, reward, done, info = env.step(action)
-            ta2 = time.perf_counter()
             total_reward += reward
             sample_mask = next_obs["action_mask"]
-            reward_info_step_list = list(info['reward_info'].values())
+            reward_info_step_list.append(list(info['reward_info'].values()))
 
             next_pose = parking_agent.vcs_action_step(predict_pose_list[-1], action)
             predict_pose_list.append(next_pose)
@@ -384,21 +378,6 @@ def actor_worker(
                 actor_id,
                 (obs, action, reward, done, log_prob, next_obs, pose_seq_cpu, seg_done, success_flag)
             ))
-            ta3 = time.perf_counter()
-
-
-            t_action += (ta1 - ta0)
-            t_env    += (ta2 - ta1)
-            t_put    += (ta3 - ta2)
-            steps_acc += 1
-            if steps_acc % REPORT_EVERY_STEPS == 0:
-                traj_queue.put(("timing", actor_id, {
-                    "t_action": t_action,
-                    "t_env": t_env,
-                    "t_put": t_put,
-                    "steps": REPORT_EVERY_STEPS
-                }))
-                t_action = t_env = t_put = 0.0
 
             if seg_done:
                 obs = next_obs
@@ -480,15 +459,15 @@ if __name__=="__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('--agent_ckpt', type=str, default='./rl_model/SAC2_6999.pt') # './model/ckpt/SAC.pt'
     parser.add_argument('--img_ckpt', type=str, default='./model/ckpt/autoencoder.pt')
-    parser.add_argument('--train_episode', type=int, default=100000)
+    parser.add_argument('--train_episode', type=int, default=800000)
     parser.add_argument('--eval_episode', type=int, default=20)
     parser.add_argument('--verbose', type=bool, default=True)
     parser.add_argument('--visualize', type=bool, default=True)
     parser.add_argument('--config', default='./config/training_real.yaml', type=str)
     parser.add_argument("--num_actors", type=int, default=2)
     parser.add_argument("--actor_device", type=str, default="cpu")  # 建议 cpu，避免多个进程抢同一张 GPU
-    parser.add_argument("--sync_interval", type=int, default=2000)  # learner 每多少步同步一次 actor 权重
-    parser.add_argument("--queue_size", type=int, default=200)
+    parser.add_argument("--sync_interval", type=int, default=200)  # learner 每多少步同步一次 actor 权重
+    parser.add_argument("--queue_size", type=int, default=4096)
     args = parser.parse_args()
     config_path = args.config
     config_obj = get_train_config_obj(config_path)
@@ -589,7 +568,7 @@ if __name__=="__main__":
     parking_agent.agent.set_start_traj_point(start_traj_point_np)
     burn = GpuBurnWorker(device=0, iters_per_burst=5, sleep_ms=5)
     burn.start()
-    release = None
+    burn_released = threading.Event()   # ✅ 只释放一次
 
 
     if args.num_actors > 1:
@@ -614,145 +593,218 @@ if __name__=="__main__":
             p.start()
             procs.append(p)
 
-        global_episode = 0
-        total_step_num = 0
+    
+        # ========== 线程队列 ==========
+        # transitions：高频，建议有界，避免内存无限涨
+        TRANS_Q_MAX = 2000  # 视 obs 体积调整：如果每条很大就调小
+        trans_q = queue.Queue(maxsize=TRANS_Q_MAX)
+
+        # ctrl：低频（timing/episode_end），用有界+大点即可
+        ctrl_q = queue.Queue(maxsize=10000)
+
+        # ========== 共享状态 ==========
+        state_lock = threading.Lock()
+        model_lock = threading.Lock()  # 保存/评测时暂停训练，避免参数读写冲突
+
+        shared = {
+            "global_episode": 0,
+            "total_step_num": 0,     # 以“写入 replay 的 transition 数”为准
+            "last_sync_step": 0,
+            "stop": False,
+        }
+
+        # ========== PERF 统计（沿用你原来的打印口径） ==========
+
         warmup_steps = int(parking_agent.configs.memory_size * 1.3)
 
-        def _now():
-            return time.perf_counter()
+        # 想“更频繁更新”就设小一点；设为 10 等价你原来 %10
+        UPDATE_EVERY_TRANS = 1
 
-        learner_t = defaultdict(float)
-        learner_n = defaultdict(int)
-        last_report = _now()
-        REPORT_SEC = 5.0
+        # ========== 队列放入：满了就丢最旧的 transition（保证 collector 永不阻塞） ==========
+        def put_trans_drop_oldest(item):
+            try:
+                trans_q.put_nowait(item)
+            except queue.Full:
+                # 丢一条最旧的，再放最新的
+                try:
+                    trans_q.get_nowait()
+                except queue.Empty:
+                    pass
+                try:
+                    trans_q.put_nowait(item)
+                except queue.Full:
+                    # 极端情况下再丢就算了
+                    pass
 
-        while global_episode < args.train_episode:
-            t0 = _now()
-            msg = traj_queue.get()
-            t1 = _now()
-            learner_t["wait_get"] += (t1 - t0)
-            learner_n["msgs"] += 1
-            if msg[0] == "transition":
-                _, aid, exp = msg
+        # ========== 三个线程 ==========
+        def collector_loop():
+            # 只做：从 mp 队列取消息，快速分发
+            while not stop_event.is_set():
+                try:
+                    msg = traj_queue.get(timeout=0.5)  # 0.5s 无消息就超时，便于退出
+                except Empty:
+                    continue
 
-                t2 = _now()
-                parking_agent.push_memory(exp, actor_id=aid)  # ✅关键：传 actor_id
-                t3 = _now()
-                learner_t["push_mem"] += (t3 - t2)
-                learner_n["push_cnt"] += 1
-                total_step_num += 1
+                tag = msg[0]
+                if tag == "transition":
+                    _, aid, exp = msg
+                    put_trans_drop_oldest((aid, exp))
+                else:
+                    # timing / episode_end 等交给主线程处理
+                    try:
+                        ctrl_q.put_nowait(msg)
+                    except queue.Full:
+                        # ctrl_q 满了很少见；满了就丢 timing，但不要丢 episode_end
+                        if tag == "episode_end":
+                            ctrl_q.put(msg)
 
-                if total_step_num > warmup_steps and total_step_num % 10 == 0:
-                    if torch.cuda.is_available():
-                        torch.cuda.synchronize()
-                    t4 = _now()
-                    actor_loss, critic_loss = parking_agent.update(total_step_num, global_episode)
-                    if torch.cuda.is_available():
-                        torch.cuda.synchronize()
-                    t5 = _now()
-                    learner_t["update"] += (t5 - t4)
-                    learner_n["update_cnt"] += 1
-                    # if total_step_num%1000==0 and (rank == 0):
-                    #     writer.add_scalar("actor_loss", actor_loss, total_step_num)
-                    #     writer.add_scalar("critic_loss", critic_loss, total_step_num)
+        def pusher_loop():
+            # 只做：从 trans_q 取 transition → push_memory 写 replay
+            while not stop_event.is_set():
+                try:
+                    aid, exp = trans_q.get(timeout=0.5)
+                except queue.Empty:
+                    continue
 
-                if total_step_num % args.sync_interval == 0:
-                    st = parking_agent.agent.get_actor_state()
+                parking_agent.push_memory(exp, actor_id=aid)
+
+                with state_lock:
+                    shared["total_step_num"] += 1
+
+        def trainer_loop():
+            # 只做：update（纯训练）+ 周期性同步权重
+            while not stop_event.is_set():
+                with state_lock:
+                    ts = shared["total_step_num"]
+                    ge = shared["global_episode"]
+                    last_sync = shared["last_sync_step"]
+
+                # warmup 前不更新
+                if ts <= warmup_steps:
+                    time.sleep(0.002)
+                    continue
+
+                # 如果你希望“严格每来 N 条新数据才更新一次”，用这个门控：
+                # （否则 trainer 会尽量一直跑 update，GPU 更满，但 UTD 会更高）
+                # if ts % UPDATE_EVERY_TRANS != 0:
+                #     time.sleep(0.001)
+                #     continue
+
+                # ✅ warmup 结束后，立刻停掉 burn（只执行一次）
+                if not burn_released.is_set():
+                    burn.stop(join_timeout=None)  # 或者给个 1~2s timeout
+                    burn_released.set()
+                    # print(f"gpu burn stopped at ts={ts}")
+
+          
+                with model_lock:
+                    actor_loss, critic_loss = parking_agent.update(ts, ge)
+        
+
+                # 同步权重（不属于训练，但轻量，放这里最方便）
+                if (ts - last_sync) >= args.sync_interval:
+                    with model_lock:
+                        st = parking_agent.agent.get_actor_state()
                     for q in weight_queues:
                         put_latest(q, st)
+                    with state_lock:
+                        shared["last_sync_step"] = ts
 
-            elif msg[0] == "timing":
-                _, aid, payload = msg
-                # 下面第2部分会让 actor 发 timing 过来，这里做汇总
-                learner_t["actor_action"] += payload["t_action"]
-                learner_t["actor_env"]    += payload["t_env"]
-                learner_t["actor_put"]    += payload["t_put"]
-                learner_n["actor_steps"]  += payload["steps"]
-                learner_n["actor_reports"] += 1
+        # 启动线程（建议 daemon=False，便于 join 干净退出）
+        t_col = threading.Thread(target=collector_loop, daemon=False)
+        t_push = threading.Thread(target=pusher_loop, daemon=False)
+        t_trn = threading.Thread(target=trainer_loop, daemon=False)
 
-            elif msg[0] == "episode_end":
-                _, aid, payload = msg
-                global_episode += 1
+        t_col.start()
+        t_push.start()
+        t_trn.start()
 
-                # ---- 全局统计 list（learner 维护）----
-                succ_record.append(payload["success"])
-                reward_list.append(payload["total_reward"])
-                reward_info_list.append(payload["reward_info_sum"])
-                case_id_list.append(payload["case_id"])
+        # ========== 主线程：处理 ctrl_q（episode_end/timing）+ 打印 PERF + save/eval ==========
+        best_success_ratio = 0.0
+        best_reward_averge = -1e9
 
-                if verbose and (global_episode % (10*args.num_actors) == 0) and global_episode > 0 and rank == 0:
-                    print('success rate:', np.sum(succ_record), '/', len(succ_record))
-                    print('success rate ratio: {:.6f}'.format(np.sum(succ_record) / len(succ_record)))
+        while not stop_event.is_set():
+            # 1) 处理控制消息（episode_end/timing）
+            try:
+                msg = ctrl_q.get(timeout=0.2)
+                tag = msg[0]
+                if tag == "timing":
+                    _, aid, payload = msg
+                elif tag == "episode_end":
+                    _, aid, payload = msg
+                    with state_lock:
+                        shared["global_episode"] += 1
+                        ge = shared["global_episode"]
 
-                    bundle = parking_agent.agent._unwrap(parking_agent.agent.bundle)
-                    log_std = bundle.log_std.detach().cpu().numpy().reshape(-1)
-                    print("log_std: ", log_std)
-                    print("alpha: ", parking_agent.alpha.detach().cpu().numpy().reshape(-1))
+                    succ_record.append(payload["success"])
+                    reward_list.append(payload["total_reward"])
+                    reward_info_list.append(payload["reward_info_sum"])
+                    case_id_list.append(payload["case_id"])
 
-                    print("episode:%s  average reward:%s" % (global_episode, np.mean(reward_list[-50:])))
-                    print(np.mean(parking_agent.actor_loss_list[-100:]), np.mean(parking_agent.critic_loss_list[-100:]))
+                    # 训练结束
+                    if ge >= args.train_episode:
+                        stop_event.set()
+                        break
 
-                    print('time_cost ,rs_dist_reward ,dist_reward ,angle_reward ,box_union_reward ,gear_shift_reward ,abs_shape ,near_bonus, low_speed, risk_reward, high_speed, big_steer', 'u_turn')
+                    # 你原来的 verbose 打印逻辑可以放这里（按 ge 判断即可）
+                    if verbose and (ge % (10 * args.num_actors) == 0) and rank == 0:
+                        print('success rate:', np.sum(succ_record), '/', len(succ_record))
+                        print('success rate ratio: {:.6f}'.format(np.sum(succ_record) / len(succ_record)))
+                        bundle = parking_agent.agent._unwrap(parking_agent.agent.bundle)
+                        log_std = bundle.log_std.detach().cpu().numpy().reshape(-1)
+                        print("log_std: ", log_std)
+                        print("alpha: ", parking_agent.alpha.detach().cpu().numpy().reshape(-1))
+                        print("episode:%s  average reward:%s" % (ge, np.mean(reward_list[-50:])))
+                        print(np.mean(parking_agent.actor_loss_list[-100:]), np.mean(parking_agent.critic_loss_list[-100:]))
+                        print('time_cost ,rs_dist_reward ,dist_reward ,angle_reward ,box_union_reward ,gear_shift_reward ,abs_shape ,near_bonus, low_speed, risk_reward, high_speed, big_steer','u_turn')
+                        for cid, rew, rinfo in zip(case_id_list[-10:], reward_list[-10:], reward_info_list[-10:]):
+                            print(cid, rew, rinfo)
+                        print("")
+            except queue.Empty:
+                pass
 
-                    # 安全打印最近 10 条（避免 list 不足 10 报错）
-                    for cid, rew, rinfo in zip(case_id_list[-10:], reward_list[-10:], reward_info_list[-10:]):
-                        print(cid, rew, rinfo)
-                    print("")
-            # 周期性打印
-            now = _now()
-            if (now - last_report) > REPORT_SEC and rank == 0:
-                msg_avg = learner_t["wait_get"] / max(1, learner_n["msgs"])
-                push_avg = learner_t["push_mem"] / max(1, learner_n["push_cnt"])
-                upd_avg = learner_t["update"] / max(1, learner_n["update_cnt"])
+            # 2) 周期性 PERF 打印
 
-                print(
-                    f"[PERF] wait_get={msg_avg*1000:.2f}ms/msg  "
-                    f"push_mem={push_avg*1000:.2f}ms/trans  "
-                    f"update={upd_avg*1000:.2f}ms/update  "
-                    f"updates={learner_n['update_cnt']} in {REPORT_SEC:.1f}s"
-                )
 
-                if learner_n["actor_steps"] > 0:
-                    s = learner_n["actor_steps"]
-                    print(
-                        f"[ACTOR(avg)] action={learner_t['actor_action']/s*1000:.2f}ms/step  "
-                        f"env={learner_t['actor_env']/s*1000:.2f}ms/step  "
-                        f"put={learner_t['actor_put']/s*1000:.2f}ms/step"
-                    )
+            # 3) save / eval（建议用 model_lock 暂停训练，避免并发读写模型）
+            with state_lock:
+                ge = shared["global_episode"]
 
-                learner_t.clear()
-                learner_n.clear()
-                last_report = now
+            if (ge + 1) % (1000 * args.num_actors) == 0 and rank == 0:
+                with model_lock:
+                    if distributed:
+                        dist.barrier()
+                    parking_agent.save(f"{save_path}/SAC2_{ge}.pt", params_only=True)
+                    if distributed:
+                        dist.barrier()
 
-            if (global_episode+1) % (1000*args.num_actors)== 0 and ((not parking_agent.distributed) or rank == 0):
-                if distributed:
-                    dist.barrier()
-                if rank == 0:
-                    parking_agent.save("%s/SAC2_%s.pt" % (save_path, global_episode),params_only=True)
-                if distributed:
-                    dist.barrier()
-
-    
-            if (global_episode+1) % (1000*args.num_actors)== 0 and ((not parking_agent.distributed) or rank == 0):
-                eval_episode = args.eval_episode
-                choose_action = True
+                # eval 很慢，会暂停 trainer（因为 model_lock），但不会卡住仿真（collector仍在跑）
                 with torch.no_grad():
-                    # eval on complex
-                    env.set_level('Complex')
-                    log_path = save_path+'/complex'
-                    if not os.path.exists(log_path):
-                        os.makedirs(log_path)
-                    success_ratio, reward_avg = eval(env, parking_agent, episode=eval_episode, log_path=log_path, post_proc_action=choose_action)
-                    if success_ratio>=best_success_ratio and reward_avg >= best_reward_averge:
-                        parking_agent.save("%s/SAC_best.pt" % (save_path),params_only=True)
-                        f_best_log = open(save_path+'best.txt', 'w')
-                        f_best_log.write('epoch: %s, success rate: %s, reward_avg: %s '%(global_episode+1, success_ratio, reward_avg))
-                        f_best_log.close()
-                    best_success_ratio = success_ratio
-                    best_reward_averge = reward_avg
-                    
+                    with model_lock:
+                        env.set_level('Complex')
+                        log_path = save_path + '/complex'
+                        os.makedirs(log_path, exist_ok=True)
+                        success_ratio, reward_avg = eval(
+                            env, parking_agent, episode=args.eval_episode, log_path=log_path, post_proc_action=True
+                        )
+                        if success_ratio >= best_success_ratio and reward_avg >= best_reward_averge:
+                            parking_agent.save(f"{save_path}/SAC_best.pt", params_only=True)
+                            with open(save_path + 'best.txt', 'w') as f_best_log:
+                                f_best_log.write(f'epoch: {ge+1}, success rate: {success_ratio}, reward_avg: {reward_avg} ')
+                            best_success_ratio = success_ratio
+                            best_reward_averge = reward_avg
+
+        # ========== 收尾 ==========
         stop_event.set()
+
+        # 先停 actors
         for q in weight_queues:
             put_latest(q, None)
         for p in procs:
             p.join()
+
+        # 再停线程
+        t_col.join()
+        t_push.join()
+        t_trn.join()
+        burn.stop()
