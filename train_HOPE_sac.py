@@ -255,7 +255,8 @@ class DlpCaseChoose():
 if __name__=="__main__":
 
     parser = argparse.ArgumentParser()
-    parser.add_argument('--agent_ckpt', type=str, default='./rl_model/SAC2_6999.pt') # './model/ckpt/SAC.pt'
+
+    parser.add_argument('--agent_ckpt', type=str, default='./rl_model/SAC2_14999.pt') # './model/ckpt/SAC.pt'
     parser.add_argument('--img_ckpt', type=str, default='./model/ckpt/autoencoder.pt')
     parser.add_argument('--train_episode', type=int, default=100000)
     parser.add_argument('--eval_episode', type=int, default=20)
@@ -356,12 +357,12 @@ if __name__=="__main__":
     regressive_step = REGRESSIVE_STEP
 
     def rs_mix_prob(episode: int) -> float:
-        start_episode = 10000
+        start_episode = 14999
         end_episode = 50000
-        start_p = 1.0
+        start_p = 0.865
         end_p = 0.1
         if episode < start_episode:
-            return 1.1
+            return 0.865
         if episode >= end_episode:
             return end_p
 
@@ -483,15 +484,17 @@ if __name__=="__main__":
                 obs = next_obs
                 predict_pose_list.clear()
                 predict_pose_list.append(start_traj_point_np)
-            if release is None and total_step_num > parking_agent.configs.memory_size:
+                
+            if release is None and total_step_num > warmup_steps:
                 burn.stop()
                 release = True
             # obs = next_obs
             if total_step_num > warmup_steps and total_step_num%10==0: 
                 actor_loss, critic_loss = parking_agent.update(total_step_num, i)
-                if total_step_num%1000==0 and (rank == 0):
-                    writer.add_scalar("actor_loss", actor_loss, i)
-                    writer.add_scalar("critic_loss", critic_loss, i)
+                # if total_step_num%1000==0 and (rank == 0):
+                
+                #     writer.add_scalar("actor_loss", actor_loss, i)
+                #     writer.add_scalar("critic_loss", critic_loss, i)
             
             rs_path_avail = (info.get('path_to_dest', None) is not None)
 
@@ -559,22 +562,22 @@ if __name__=="__main__":
         #         run_flag.clear()  # 暂停 burn
 
         if total_step_num%1000==0 and ((not parking_agent.distributed) or rank == 0):     
-            writer.add_scalar("total_reward", total_reward, i)
-            writer.add_scalar("avg_reward", np.mean(reward_per_state_list[-1000:]), i)
+            # writer.add_scalar("total_reward", total_reward, i)
+            # writer.add_scalar("avg_reward", np.mean(reward_per_state_list[-1000:]), i)
             bundle = parking_agent.agent._unwrap(parking_agent.agent.bundle)
             log_std = bundle.log_std.detach().cpu().numpy().reshape(-1)
-            writer.add_scalar("action_std0", log_std[0],i)
-            writer.add_scalar("action_std1", log_std[1],i)
-            writer.add_scalar("alpha", parking_agent.alpha.detach().cpu().numpy().reshape(-1)[0],i)
-            for type_id in scene_chooser.scene_types:
-                vals = scene_chooser.success_record[type_id][-100:]
-                mean_success = float(np.mean(vals)) if len(vals) > 0 else 0.0
-                writer.add_scalar(
-                    f"success_rate_{scene_chooser.scene_types[type_id]}",
-                    mean_success,
-                    i
-                )
-            writer.add_scalar("step_num", step_num, i)
+            # writer.add_scalar("action_std0", log_std[0],i)
+            # writer.add_scalar("action_std1", log_std[1],i)
+            # writer.add_scalar("alpha", parking_agent.alpha.detach().cpu().numpy().reshape(-1)[0],i)
+            # for type_id in scene_chooser.scene_types:
+            #     vals = scene_chooser.success_record[type_id][-100:]
+            #     mean_success = float(np.mean(vals)) if len(vals) > 0 else 0.0
+            #     writer.add_scalar(
+            #         f"success_rate_{scene_chooser.scene_types[type_id]}",
+            #         mean_success,
+            #         i
+            #     )
+            # writer.add_scalar("step_num", step_num, i)
         reward_list.append(total_reward)
         reward_info = np.sum(np.array(reward_info), axis=0)
         reward_info = np.round(reward_info,2)

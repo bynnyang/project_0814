@@ -49,8 +49,8 @@ def random_uniform_num(rng, clip_low, clip_high):
 def get_rand_pos(rng, origin_x, origin_y, angle_min, angle_max, radius_min, radius_max):
     angle_mean = (angle_max+angle_min)/2
     angle_std = (angle_max-angle_min)/4
-    angle_rand = random_gaussian_num(angle_mean, angle_std, angle_min, angle_max)
-    radius_rand = random_gaussian_num((radius_min+radius_max)/2, (radius_max-radius_min)/4, radius_min, radius_max)
+    angle_rand = random_gaussian_num(rng, angle_mean, angle_std, angle_min, angle_max)
+    radius_rand = random_gaussian_num(rng, (radius_min+radius_max)/2, (radius_max-radius_min)/4, radius_min, radius_max)
     return origin_x+cos(angle_rand)*radius_rand, origin_y+sin(angle_rand)*radius_rand
 
 def generate_bay_parking_case(map_level, rng):

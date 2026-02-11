@@ -128,9 +128,10 @@ REWARD_WEIGHT = OrderedDict({'time_cost':1,\
             'near_bonus':5.0,
             'low_speed':1.0,
             'risk_reward':5.0,
-            'high_speed':1.0,
+            'high_speed':5.0,
             'big_steer':1.0,
             'u_turn':1.0})
+
 
 OUTBOUND_REWARD = -30
 OUTTIME_REWARD = -30

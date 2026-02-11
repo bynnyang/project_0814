@@ -639,12 +639,23 @@ class SACAgent(AgentBase):
         旧版: (obs, action, reward, done, log_prob, next_obs, pose_seq_cpu, seg_done)
         新版: (obs, action, reward, done, log_prob, next_obs, pose_seq_cpu, seg_done, success_flag)
         """
+
+        def _has_minimal_obs_keys(obs):
+            # 只做最关键的存在性检查，不看 shape / dtype
+            return (
+                isinstance(obs, dict)
+                and "target" in obs and obs["target"] is not None
+                and "park_target_point" in obs and obs["park_target_point"] is not None
+            )
         # 兼容老调用
         if len(observations) == 9:
             obs, action, reward, done, log_prob, next_obs, pose_seq_cpu, seg_done, success_flag = observations
         else:
             obs, action, reward, done, log_prob, next_obs, pose_seq_cpu, seg_done = observations
             success_flag = False
+
+        if not _has_minimal_obs_keys(obs) or not _has_minimal_obs_keys(next_obs):
+            return
 
         obs2, action2, reward2, done2, log_prob2, next_obs2, seg_done2 = deepcopy(
             (obs, action, reward, done, log_prob, next_obs, seg_done)
@@ -680,6 +691,7 @@ class SACAgent(AgentBase):
 
     def _reward_norm(self, reward):
         return (reward - reward.mean()) / (reward.std() + 1e-8)
+    
     def obs2tensor(self, obs, non_blocking=True, pin=True, normalize_image=True):
    
         keys = list(self.configs.observation_shape.keys())
@@ -687,53 +699,144 @@ class SACAgent(AgentBase):
         use_cuda = (device.type == "cuda")
         nb = (non_blocking and use_cuda)
 
-        def _cpu_tensor_from_value(v, expect_uint8=False):
-            # numpy / list
-            if expect_uint8:
-                a = np.asarray(v, dtype=np.uint8)
-            else:
-                a = np.asarray(v, dtype=np.float32)
-            return torch.from_numpy(a).contiguous()  # CPU
-
         def _to_device(t_cpu: torch.Tensor):
             if pin and use_cuda:
                 t_cpu = t_cpu.pin_memory()
             return t_cpu.to(device, non_blocking=nb)
+        
+
+        def _stack_to_tensor_fast(obs_list, k, dtype):
+            """
+            fast path: np.stack -> torch.from_numpy once
+            return: torch.Tensor on CPU
+            """
+            # 注意：这里假设 obs_list[i][k] 都是 numpy / list 且 shape 一致
+            arr = np.stack([o[k] for o in obs_list], axis=0)      # [B,...]
+            # dtype 转换尽量不拷贝
+            arr = arr.astype(dtype, copy=False)
+            # 确保内存连续，torch.from_numpy 才不会额外复制
+            if not arr.flags["C_CONTIGUOUS"]:
+                arr = np.ascontiguousarray(arr)
+            return torch.from_numpy(arr)  # CPU
+
+        def _cpu_tensor_from_value(v, expect_uint8=False):
+            # fallback path（你原来的逐样本逻辑）
+            if expect_uint8:
+                a = np.asarray(v, dtype=np.uint8)
+            else:
+                a = np.asarray(v, dtype=np.float32)
+            if not a.flags["C_CONTIGUOUS"]:
+                a = np.ascontiguousarray(a)
+            return torch.from_numpy(a)
 
         out = {}
 
         if isinstance(obs, list):
-            # batch path
+            # ===== batch path =====
             for k in keys:
                 if k == "image":
-                    ts = [_cpu_tensor_from_value(o[k], expect_uint8=True) for o in obs]
-                    batch_cpu = torch.stack(ts, dim=0).contiguous()          # [B,...] uint8 CPU
-                    batch = _to_device(batch_cpu)                            # uint8 GPU
+                    # ---- fast path ----
+                    try:
+                        batch_cpu = _stack_to_tensor_fast(obs, k, np.uint8)      # uint8 CPU, [B,...]
+                    except Exception:
+                        # ---- fallback ----
+                        ts = [_cpu_tensor_from_value(o[k], expect_uint8=True) for o in obs]
+                        batch_cpu = torch.stack(ts, dim=0).contiguous()
+
+                    batch = _to_device(batch_cpu)                                # uint8 GPU/CPU
                     if normalize_image:
-                        batch = batch.float().div_(255.0)                    # float32 GPU in-place
+                        batch = batch.float().div_(255.0)                         # float32, in-place
                     out[k] = batch
                 else:
-                    ts = [_cpu_tensor_from_value(o[k], expect_uint8=False) for o in obs]
-                    batch_cpu = torch.stack(ts, dim=0).contiguous()          # [B,...] float32 CPU
-                    out[k] = _to_device(batch_cpu)                           # float32 GPU
+                    # ---- fast path ----
+                    try:
+                        batch_cpu = _stack_to_tensor_fast(obs, k, np.float32)     # float32 CPU, [B,...]
+                    except Exception:
+                        # ---- fallback ----
+                        ts = [_cpu_tensor_from_value(o[k], expect_uint8=False) for o in obs]
+                        batch_cpu = torch.stack(ts, dim=0).contiguous()
+
+                    out[k] = _to_device(batch_cpu)                                # float32 GPU/CPU
+
             return out
 
         elif isinstance(obs, dict):
-            # single path
+            # ===== single path =====
             for k in keys:
                 if k == "image":
-                    t_cpu = _cpu_tensor_from_value(obs[k], expect_uint8=True).unsqueeze(0)  # [1,...] uint8
+                    a = np.asarray(obs[k], dtype=np.uint8)
+                    if not a.flags["C_CONTIGUOUS"]:
+                        a = np.ascontiguousarray(a)
+                    t_cpu = torch.from_numpy(a).unsqueeze(0)                      # [1,...] uint8
                     t = _to_device(t_cpu)
                     if normalize_image:
                         t = t.float().div_(255.0)
                     out[k] = t
                 else:
-                    t_cpu = _cpu_tensor_from_value(obs[k], expect_uint8=False).unsqueeze(0) # [1,...] float32
+                    a = np.asarray(obs[k], dtype=np.float32)
+                    if not a.flags["C_CONTIGUOUS"]:
+                        a = np.ascontiguousarray(a)
+                    t_cpu = torch.from_numpy(a).unsqueeze(0)                      # [1,...] float32
                     out[k] = _to_device(t_cpu)
             return out
 
         else:
             raise NotImplementedError(f"Unsupported obs type: {type(obs)}")
+        
+    # def obs2tensor(self, obs, non_blocking=True, pin=True, normalize_image=True):
+   
+    #     keys = list(self.configs.observation_shape.keys())
+    #     device = self.device
+    #     use_cuda = (device.type == "cuda")
+    #     nb = (non_blocking and use_cuda)
+
+    #     def _cpu_tensor_from_value(v, expect_uint8=False):
+    #         # numpy / list
+    #         if expect_uint8:
+    #             a = np.asarray(v, dtype=np.uint8)
+    #         else:
+    #             a = np.asarray(v, dtype=np.float32)
+    #         return torch.from_numpy(a).contiguous()  # CPU
+
+    #     def _to_device(t_cpu: torch.Tensor):
+    #         if pin and use_cuda:
+    #             t_cpu = t_cpu.pin_memory()
+    #         return t_cpu.to(device, non_blocking=nb)
+
+    #     out = {}
+
+    #     if isinstance(obs, list):
+    #         # batch path
+    #         for k in keys:
+    #             if k == "image":
+    #                 ts = [_cpu_tensor_from_value(o[k], expect_uint8=True) for o in obs]
+    #                 batch_cpu = torch.stack(ts, dim=0).contiguous()          # [B,...] uint8 CPU
+    #                 batch = _to_device(batch_cpu)                            # uint8 GPU
+    #                 if normalize_image:
+    #                     batch = batch.float().div_(255.0)                    # float32 GPU in-place
+    #                 out[k] = batch
+    #             else:
+    #                 ts = [_cpu_tensor_from_value(o[k], expect_uint8=False) for o in obs]
+    #                 batch_cpu = torch.stack(ts, dim=0).contiguous()          # [B,...] float32 CPU
+    #                 out[k] = _to_device(batch_cpu)                           # float32 GPU
+    #         return out
+
+    #     elif isinstance(obs, dict):
+    #         # single path
+    #         for k in keys:
+    #             if k == "image":
+    #                 t_cpu = _cpu_tensor_from_value(obs[k], expect_uint8=True).unsqueeze(0)  # [1,...] uint8
+    #                 t = _to_device(t_cpu)
+    #                 if normalize_image:
+    #                     t = t.float().div_(255.0)
+    #                 out[k] = t
+    #             else:
+    #                 t_cpu = _cpu_tensor_from_value(obs[k], expect_uint8=False).unsqueeze(0) # [1,...] float32
+    #                 out[k] = _to_device(t_cpu)
+    #         return out
+
+    #     else:
+    #         raise NotImplementedError(f"Unsupported obs type: {type(obs)}")
         
     
     def get_obs(self, obs, ids):
@@ -747,7 +850,7 @@ class SACAgent(AgentBase):
     def alpha(self):
         return self.log_alpha.exp()
     
-    def _get_action_and_log_prob(self, obs, gt_traj_point_batch, length_batch, step):
+    def _get_action_and_log_prob(self, obs, gt_traj_point_batch, length_batch, step, return_mu_logstd: bool = False):
         observation = obs
         b = self._unwrap(self.bundle)
         encoder_out, point_out = b.encode_actor_obs(observation)
@@ -791,6 +894,8 @@ class SACAgent(AgentBase):
                 for k, v in log.items():
                     print(f"{k}: {v:.6f}")
                 print("=======================")
+        if return_mu_logstd:
+            return action_batch, log_prob, mean_u, log_std
         return action_batch, log_prob
     
 
@@ -987,28 +1092,40 @@ class SACAgent(AgentBase):
             with temporary_freeze_modules(q1_parts + q2_parts),temporary_eval(b.q1_encoder, b.q1_point_encoder, b.q1_net,
                                                                   b.q2_encoder, b.q2_point_encoder, b.q2_net):
                 # policy loss
-                action_, log_prob = self._get_action_and_log_prob(state_batch, tgt_train, len_curr, step)
+                action_, log_prob, mu_new, logstd_new  = self._get_action_and_log_prob(state_batch, tgt_train, len_curr, step, return_mu_logstd=True)
 
-                b = self._unwrap(self.bundle)
-                encoder_out, point_out = b.encode_actor_obs(state_batch)
-                _, _, policy_dist = b.actor_net(encoder_out, point_out, tgt_train, len_curr)
-                mu_new = policy_dist
-                logstd_new = torch.clamp(b.log_std.expand_as(mu_new), -6.0, 0.0)
-                with torch.no_grad():
-                    tb = self.teacher_bundle  # already unwrapped & frozen
-                    enc_old = tb.actor_encoder(state_batch)
-                    pt_old  = tb.actor_point_encoder(state_batch["park_target_point"])
-                    _, _, policy_old = tb.actor_net(enc_old, pt_old, tgt_train, len_curr)
-                    mu_old = policy_old
-                    logstd_old = torch.clamp(tb.log_std.expand_as(mu_old), -6.0, 0.0)
+                # b = self._unwrap(self.bundle)
+                # encoder_out, point_out = b.encode_actor_obs(state_batch)
+                # _, _, policy_dist = b.actor_net(encoder_out, point_out, tgt_train, len_curr)
+                # mu_new = policy_dist
+                # logstd_new = torch.clamp(b.log_std.expand_as(mu_new), -6.0, 0.0)
+                # with torch.no_grad():
+                #     tb = self.teacher_bundle  # already unwrapped & frozen
+                #     enc_old = tb.actor_encoder(state_batch)
+                #     pt_old  = tb.actor_point_encoder(state_batch["park_target_point"])
+                #     _, _, policy_old = tb.actor_net(enc_old, pt_old, tgt_train, len_curr)
+                #     mu_old = policy_old
+                #     logstd_old = torch.clamp(tb.log_std.expand_as(mu_old), -6.0, 0.0)
 
+                kl_beta = self.configs.kl_beta * (max(0,1-i/3000))
 
+                if kl_beta > 0.01:
+                    with torch.no_grad():
+                        tb = self.teacher_bundle  # already unwrapped & frozen
+                        enc_old = tb.actor_encoder(state_batch)
+                        pt_old  = tb.actor_point_encoder(state_batch["park_target_point"])
+                        _, _, policy_old = tb.actor_net(enc_old, pt_old, tgt_train, len_curr)
+                        mu_old = policy_old
+                        logstd_old = torch.clamp(tb.log_std.expand_as(mu_old), -6.0, 0.0)
+                    kl = self._policy_kl_u_space(mu_new, logstd_new, mu_old, logstd_old)
+                else:
+                    kl = torch.zeros((), device=mu_new.device, dtype=mu_new.dtype)
 
                 q1_value = self._q1_forward(state_batch, action_, tgt_train, len_curr)
                 q2_value = self._q2_forward(state_batch, action_, tgt_train, len_curr)
                 sac_loss = (self.alpha.detach() * log_prob - torch.min(q1_value, q2_value)).mean()
-                kl = self._policy_kl_u_space(mu_new, logstd_new, mu_old, logstd_old)
-                kl_beta = self.configs.kl_beta * (max(0,1-i/3000))
+                # kl = self._policy_kl_u_space(mu_new, logstd_new, mu_old, logstd_old)
+                # kl_beta = self.configs.kl_beta * (max(0,1-i/3000))
                 actor_loss = sac_loss + kl_beta * kl
 
                 # update actor
